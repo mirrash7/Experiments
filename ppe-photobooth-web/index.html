@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPE Photobooth — powered by Roboflow</title>
+<style>
+  :root { --purple: #8315F9; --lav: #C4A9F4; --navy: #100633; --bg: #141211; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: #eee; font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+         min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+  header { width: 100%; padding: 14px 20px; display: flex; align-items: baseline; gap: 10px;
+           border-bottom: 3px solid var(--purple); }
+  header h1 { font-size: 20px; letter-spacing: 1px; }
+  header span { color: var(--lav); font-size: 13px; }
+  #stage { position: relative; width: min(96vw, 960px); margin: 18px 0; }
+  video, #overlay { width: 100%; border-radius: 10px; display: block; }
+  video { transform: scaleX(-1); background: #000; aspect-ratio: 16 / 9; object-fit: cover; }
+  #overlay { position: absolute; inset: 0; height: 100%; }
+  #msg { text-align: center; padding: 10px 16px; color: #bbb; font-size: 15px; max-width: 700px; }
+  button { background: var(--purple); border: 0; color: #fff; font-size: 16px; padding: 12px 26px;
+           border-radius: 8px; cursor: pointer; font-weight: 600; }
+  button:hover { filter: brightness(1.15); }
+  #modal { position: fixed; inset: 0; background: rgba(10,8,8,.92); display: none;
+           flex-direction: column; align-items: center; overflow: auto; padding: 20px; z-index: 10; }
+  #modal img { max-height: 82vh; border-radius: 6px; }
+  #modal .row { margin-top: 14px; display: flex; gap: 12px; }
+  #modal .ghost { background: #333; }
+  footer { margin-top: auto; padding: 12px; color: #777; font-size: 12px; text-align: center; }
+  footer a { color: var(--lav); }
+</style>
+</head>
+<body>
+<header><h1>PPE PHOTOBOOTH</h1><span>powered by Roboflow · RF-DETR</span></header>
+
+<div id="stage">
+  <video id="cam" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+<div id="msg">Loading…</div>
+<div style="margin-bottom:18px"><button id="startBtn" hidden>Enable camera</button></div>
+
+<div id="modal">
+  <img id="stripImg" alt="Your photobooth strip">
+  <div class="row">
+    <button id="dlBtn">Download strip</button>
+    <button id="againBtn" class="ghost">Go again</button>
+  </div>
+</div>
+
+<footer>Wear a hardhat, vest &amp; gloves — then hold your hand in the purple box to start.<br>
+Built with <a href="https://roboflow.com" target="_blank" rel="noopener">Roboflow</a> ·
+<a href="https://summit.roboflow.com" target="_blank" rel="noopener">Visual Intelligence Summit 2026</a></footer>
+
+<script>
+const MODEL = "ppe-compliance-m8dqs-z8dcg/2";
+const API_KEY = "ohxKoj8k9yrc1hRgYtsX"; // inference-only scoped key
+const REQUIRED = ["hardhat", "vest", "gloves"];
+const POS = { hardhat: ["head_helmet"], vest: ["vest"], gloves: ["hand_glove"] };
+const NEG = { hardhat: ["head_nohelmet"], vest: [], gloves: ["hand_noglove"] };
+const HANDS = ["hand_glove", "hand_noglove"];
+const PURPLE = "#8315F9", LAV = "#C4A9F4", GREEN = "#5ec84e", RED = "#e83c3c", GREY = "#9a9a9a";
+const HOLD_MS = 1200, SHOT_GAP_MS = 2600, COUNTDOWN_S = 3;
+
+const cam = document.getElementById("cam");
+const overlay = document.getElementById("overlay");
+const octx = overlay.getContext("2d");
+const msg = document.getElementById("msg");
+const startBtn = document.getElementById("startBtn");
+const modal = document.getElementById("modal");
+
+const work = document.createElement("canvas");   // mirrored frame for inference
+const hd = document.createElement("canvas");     // mirrored frame for shots
+
+let preds = [], history = [], state = "GEAR", handSince = null;
+let countdownEnd = 0, shots = [], nextShotAt = 0, flashUntil = 0, inferBusy = false;
+let assets = {};
+
+function loadImg(src) { return new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = src; }); }
+
+async function boot() {
+  assets.logo = await loadImg("roboflow_logo.png");
+  assets.banner = await loadImg("vis_banner.png");
+  startBtn.hidden = false;
+  msg.textContent = "This demo runs a PPE-detection model on your camera feed. Nothing is stored.";
+  startBtn.onclick = start;
+}
+
+async function start() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+    cam.srcObject = stream; await cam.play();
+    startBtn.hidden = true;
+    msg.textContent = "Checking your gear…";
+    requestAnimationFrame(draw);
+    inferLoop();
+  } catch (e) {
+    msg.textContent = "Camera unavailable (" + e.name + "). Allow camera access and reload.";
+  }
+}
+
+function grab(canvas, w) {
+  const vw = cam.videoWidth, vh = cam.videoHeight;
+  if (!vw) return null;
+  const h = Math.round(w * vh / vw);
+  canvas.width = w; canvas.height = h;
+  const c = canvas.getContext("2d");
+  c.save(); c.scale(-1, 1); c.drawImage(cam, -w, 0, w, h); c.restore();
+  return canvas;
+}
+
+async function inferLoop() {
+  while (true) {
+    if (cam.videoWidth && !inferBusy && state !== "RESULT") {
+      inferBusy = true;
+      try {
+        const c = grab(work, 640);
+        const b64 = c.toDataURL("image/jpeg", 0.7).split(",")[1];
+        const r = await fetch(`https://detect.roboflow.com/${MODEL}?api_key=${API_KEY}&confidence=0.4`, {
+          method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: b64 });
+        if (r.ok) {
+          const out = await r.json();
+          preds = (out.predictions || []).map(p => ({ ...p, sw: c.width, sh: c.height }));
+          history.push(gearStatus());
+          if (history.length > 5) history.shift();
+        }
+      } catch (e) { /* transient network errors: keep last result */ }
+      inferBusy = false;
+    }
+    await new Promise(r => setTimeout(r, 350));
+  }
+}
+
+function overlap(a, p) {
+  const ax1 = a.x - a.width / 2, ay1 = a.y - a.height / 2, ax2 = a.x + a.width / 2, ay2 = a.y + a.height / 2;
+  const px1 = p.x - p.width / 2, py1 = p.y - p.height / 2, px2 = p.x + p.width / 2, py2 = p.y + p.height / 2;
+  const iw = Math.max(0, Math.min(ax2, px2) - Math.max(ax1, px1));
+  const ih = Math.max(0, Math.min(ay2, py2) - Math.max(ay1, py1));
+  return iw * ih / Math.max(1, a.width * a.height);
+}
+
+function gearStatus() {
+  const people = preds.filter(p => p.class === "person");
+  if (!people.length) return null;
+  const person = people.reduce((a, b) => a.width * a.height > b.width * b.height ? a : b);
+  const near = preds.filter(p => p.class !== "person" && overlap(p, person) > 0.5).map(p => p.class);
+  const st = {};
+  for (const item of REQUIRED) {
+    if (NEG[item].some(c => near.includes(c))) st[item] = "MISSING";
+    else if (POS[item].some(c => near.includes(c))) st[item] = "OK";
+    else st[item] = item === "vest" ? "MISSING" : "UNKNOWN";
+  }
+  return st;
+}
+
+function smoothed() {
+  const votes = history.filter(Boolean);
+  if (votes.length < 3) return { ok: false, st: null };
+  const st = {};
+  for (const item of REQUIRED) {
+    const counts = {};
+    for (const v of votes) counts[v[item]] = (counts[v[item]] || 0) + 1;
+    st[item] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  }
+  return { ok: REQUIRED.every(i => st[i] === "OK"), st };
+}
+
+function handInZone(z) {
+  return preds.some(p => {
+    if (!HANDS.includes(p.class)) return false;
+    const x = p.x / p.sw * overlay.width, y = p.y / p.sh * overlay.height;
+    return x > z.x && x < z.x + z.w && y > z.y && y < z.y + z.h;
+  });
+}
+
+function chip(text, color, x, y) {
+  octx.font = "600 15px -apple-system, Arial";
+  const w = octx.measureText(text).width + 30;
+  octx.fillStyle = "rgba(20,18,17,.75)"; octx.fillRect(x, y, w, 30);
+  octx.fillStyle = color; octx.beginPath(); octx.arc(x + 13, y + 15, 5, 0, 7); octx.fill();
+  octx.fillStyle = "#eee"; octx.fillText(text, x + 24, y + 20);
+  return w;
+}
+
+function centerText(text, y, px, color) {
+  octx.font = `800 ${px}px -apple-system, Arial`;
+  octx.textAlign = "center";
+  octx.lineWidth = px / 8; octx.strokeStyle = "rgba(0,0,0,.7)";
+  octx.strokeText(text, overlay.width / 2, y);
+  octx.fillStyle = color; octx.fillText(text, overlay.width / 2, y);
+  octx.textAlign = "left";
+}
+
+function draw(ts) {
+  const W = overlay.width = overlay.clientWidth * devicePixelRatio;
+  const H = overlay.height = overlay.clientHeight * devicePixelRatio;
+  octx.clearRect(0, 0, W, H);
+  const now = performance.now();
+  const { ok, st } = smoothed();
+  const zone = { x: W * 0.72, y: H * 0.06, w: W * 0.24, h: H * 0.32 };
+
+  // detection boxes
+  for (const p of preds) {
+    const neg = Object.values(NEG).flat().includes(p.class);
+    const pos = Object.values(POS).flat().includes(p.class);
+    if (!neg && !pos && p.class !== "person") continue;
+    const sx = W / p.sw, sy = H / p.sh;
+    const x = (p.x - p.width / 2) * sx, y = (p.y - p.height / 2) * sy;
+    octx.strokeStyle = p.class === "person" ? (ok ? GREEN : LAV) : neg ? RED : GREEN;
+    octx.lineWidth = p.class === "person" ? 4 : 2;
+    octx.strokeRect(x, y, p.width * sx, p.height * sy);
+  }
+
+  // gear chips
+  if (st) {
+    let cx = 14, cy = H - 44;
+    for (const item of REQUIRED) {
+      const color = st[item] === "OK" ? GREEN : st[item] === "MISSING" ? RED : GREY;
+      cx += chip(item.toUpperCase(), color, cx, cy) + 8;
+    }
+  }
+
+  if (state === "GEAR") {
+    if (!history.filter(Boolean).length) centerText("STEP INTO FRAME", H / 2, 34 * devicePixelRatio / 2, "#fff");
+    else if (!ok) {
+      const missing = st ? REQUIRED.filter(i => st[i] !== "OK").join(", ").toUpperCase() : "";
+      centerText("GEAR UP: " + missing, H - 70, 15 * devicePixelRatio, "#f5b542");
+    } else { state = "READY"; }
+  } else if (state === "READY") {
+    if (!ok) { state = "GEAR"; handSince = null; }
+    else {
+      const inside = handInZone(zone);
+      if (inside && !handSince) handSince = now;
+      if (!inside) handSince = null;
+      const prog = handSince ? Math.min(1, (now - handSince) / HOLD_MS) : 0;
+      octx.strokeStyle = inside ? GREEN : PURPLE; octx.lineWidth = 3;
+      octx.setLineDash([12, 9]); octx.strokeRect(zone.x, zone.y, zone.w, zone.h); octx.setLineDash([]);
+      octx.fillStyle = inside ? "rgba(94,200,78,.15)" : "rgba(131,21,249,.15)";
+      octx.fillRect(zone.x, zone.y, zone.w, zone.h);
+      octx.font = `600 ${11 * devicePixelRatio}px Arial`; octx.fillStyle = "#fff";
+      octx.fillText("HOLD HAND HERE", zone.x + 12, zone.y + 22);
+      if (prog > 0) {
+        octx.strokeStyle = GREEN; octx.lineWidth = 5; octx.beginPath();
+        octx.arc(zone.x + zone.w / 2, zone.y + zone.h / 2, Math.min(zone.w, zone.h) / 3,
+                 -Math.PI / 2, -Math.PI / 2 + prog * 2 * Math.PI); octx.stroke();
+      }
+      centerText("GEAR CHECK PASSED", H - 70, 15 * devicePixelRatio, GREEN);
+      if (prog >= 1) { state = "COUNTDOWN"; countdownEnd = now + COUNTDOWN_S * 1000; }
+    }
+  } else if (state === "COUNTDOWN") {
+    const left = (countdownEnd - now) / 1000;
+    if (left <= 0) { state = "CAPTURE"; shots = []; nextShotAt = now; }
+    else centerText(String(Math.ceil(left)), H / 2 + 40, 60 * devicePixelRatio, LAV);
+  } else if (state === "CAPTURE") {
+    centerText(`SHOT ${Math.min(shots.length + 1, 3)} OF 3`, 60 * devicePixelRatio / 2 + 30, 16 * devicePixelRatio, "#fff");
+    if (now >= nextShotAt) {
+      const c = grab(hd, 1280);
+      const shot = document.createElement("canvas");
+      shot.width = c.width; shot.height = c.height;
+      shot.getContext("2d").drawImage(c, 0, 0);
+      shots.push(shot);
+      flashUntil = now + 180; nextShotAt = now + SHOT_GAP_MS;
+      if (shots.length >= 3) { state = "RESULT"; composeStrip(); }
+    }
+  }
+
+  if (now < flashUntil) { octx.fillStyle = "rgba(255,255,255,.75)"; octx.fillRect(0, 0, W, H); }
+  msg.textContent = { GEAR: "Wear hardhat, vest & gloves — the checklist below tracks you live.",
+                      READY: "All gear on! Hold your hand in the purple box to start.",
+                      COUNTDOWN: "Get ready…", CAPTURE: "Hold your poses!",
+                      RESULT: "Here's your strip!" }[state];
+  requestAnimationFrame(draw);
+}
+
+function composeStrip() {
+  const pw = 560, margin = 30, sep = 22;
+  const W = pw + 2 * margin;
+  const photos = shots.map(s => { const h = Math.round(s.height * pw / s.width); return { s, h }; });
+  const logoW = Math.round(pw * 0.4), logoH = Math.round(assets.logo.height * logoW / assets.logo.width);
+  const headerH = logoH + 106;
+  const photosH = photos.reduce((a, p) => a + p.h, 0) + sep * (photos.length - 1);
+  const bannerH = Math.round(assets.banner.height * W / assets.banner.width);
+  const H = margin + headerH + photosH + bannerH;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+
+  // gradient frame behind photos
+  const g0 = margin + headerH, g1 = g0 + photosH;
+  const grad = g.createLinearGradient(0, g0, 0, g1);
+  grad.addColorStop(0, "#ffffff"); grad.addColorStop(0.35, "#cfcccb");
+  grad.addColorStop(1, "#141211");
+  g.fillStyle = grad; g.fillRect(0, g0, W, g1 - g0);
+
+  g.drawImage(assets.logo, (W - logoW) / 2, margin + 6, logoW, logoH);
+  g.fillStyle = PURPLE; g.fillRect(margin, margin + logoH + 28, W - 2 * margin, 3);
+  g.fillStyle = "#100633"; g.font = "800 26px 'Helvetica Neue', Arial"; g.textAlign = "center";
+  const date = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }).toUpperCase();
+  g.fillText(date, W / 2, margin + logoH + 72);
+
+  let y = margin + headerH;
+  for (const p of photos) { g.drawImage(p.s, margin, y, pw, p.h); y += p.h + sep; }
+  g.drawImage(assets.banner, 0, g1, W, bannerH);
+
+  document.getElementById("stripImg").src = c.toDataURL("image/jpeg", 0.92);
+  modal.style.display = "flex";
+}
+
+document.getElementById("dlBtn").onclick = () => {
+  const a = document.createElement("a");
+  a.href = document.getElementById("stripImg").src;
+  a.download = "ppe-photobooth-strip.jpg";
+  a.click();
+};
+document.getElementById("againBtn").onclick = () => {
+  modal.style.display = "none";
+  history.length = 0; shots = []; handSince = null; state = "GEAR";
+};
+
+boot();
+</script>
+</body>
+</html>
