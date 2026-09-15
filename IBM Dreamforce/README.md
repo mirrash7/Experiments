@@ -14,8 +14,12 @@ Two flights over the same stretch of **N Farm Road 159 / N Summit Road, Springfi
 ```bash
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
-cp .env.example .env          # then paste in ROBOFLOW_API_KEY_JENNIFER
 ```
+
+**No API key is needed to run the demo.** Detections for both flights are pre-computed into
+`app/cache/*.json`, so playing a flight never calls Roboflow. A key (`cp .env.example .env`) is
+only needed to use the **Upload** button on your own footage, or to re-run `precompute.py`
+after changing a model or clip.
 
 Add the one missing video: `Outputs/REFERENCE-ONLY_instagram-reel_45s_2k_equalized.mp4`
 (see `Outputs/README.md` — it is third-party footage and too large for GitHub, so ask Alexei
@@ -93,8 +97,9 @@ Both flights call models in the **jenniferworkspace** Roboflow workspace:
   `transformer`, `hit-transformer`, `tree`, `dense-vegetation`, `fallen-branch`, `street-sign`)
 - pre-storm: `jenniferworkspace/dreamforce-ibm-3-rfdetr-seg-medium-t2`
 
-Because detections are cached, the demo runs without hitting the API at all. The key is only
-needed if you re-run `precompute.py` or drop in a new video.
+Because detections are cached, the demo runs without hitting the API at all — verified by
+running it from a clean clone with no `.env` present. A key is only needed to re-run
+`precompute.py` or to drop in a new video via the Upload button.
 
 ## Known caveats
 
