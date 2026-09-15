@@ -37,7 +37,7 @@ s.start()
 seen_labels = {}
 saved = False
 t0 = time.time()
-while s.running and s.frame_idx < args.until:
+while s.running and not s.finished and s.frame_idx < args.until:
     if abs(s.frame_idx - args.watch) <= 40:
         with s.lock:
             for p in s.latest_preds:
