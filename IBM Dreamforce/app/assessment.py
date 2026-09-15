@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 FONT = "/System/Library/Fonts/Helvetica.ttc"
-LOGO = ROOT / "PPE" / "photobooth" / "roboflow_logo.png"
+LOGO = ROOT / "assets" / "roboflow_logo.png"
 
 PURPLE = (0x83, 0x15, 0xF9)
 NAVY = (0x10, 0x06, 0x33)

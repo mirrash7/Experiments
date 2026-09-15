@@ -32,14 +32,6 @@
       "alert_classes": [
         "broken-wooden-pole"
       ],
-      "show_classes": [
-        "broken-wooden-pole",
-        "leaning-wooden-pole",
-        "wooden-pole",
-        "metal-pole",
-        "hit-transformer",
-        "transformer"
-      ],
       "cache": "app/cache/post-storm.json",
       "detection": {
         "identity": "track",

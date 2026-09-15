@@ -49,7 +49,7 @@ SHOTS = [
 # Roboflow palette (BGR for OpenCV, RGB for PIL)
 PURPLE = (0x83, 0x15, 0xF9); PURPLE_DK = (0x67, 0x06, 0xCE); NAVY = (0x10, 0x06, 0x33); LAVENDER = (0xC4, 0xA9, 0xF4); WHITE = (255, 255, 255)
 def bgr(c): return (c[2], c[1], c[0])
-LOGO = ROOT / "PPE" / "photobooth" / "roboflow_logo.png"
+LOGO = ROOT / "assets" / "roboflow_logo.png"
 
 
 def ease(t):
