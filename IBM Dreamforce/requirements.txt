@@ -3,5 +3,8 @@ uvicorn[standard]
 python-multipart
 opencv-python-headless
 numpy
+Pillow
 requests
 inference-sdk
+# only needed to render the explainer video (scripts/pole_explainer.py --render)
+imageio-ffmpeg
