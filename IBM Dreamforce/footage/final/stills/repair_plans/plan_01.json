@@ -1,0 +1,22 @@
+{
+ "src": "footage/final/stills/repair_plans/src_01_1.5s.jpg",
+ "out": "footage/final/stills/repair_plans/repair_plan_01.png",
+ "title": "Repair plan",
+ "plan": "New pole   \u00b7   New transformer",
+ "items": [
+  [
+   1,
+   0,
+   930,
+   1450,
+   1085
+  ],
+  [
+   2,
+   360,
+   855,
+   660,
+   1000
+  ]
+ ]
+}

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Track calibrator</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  :root{--purple:#6706CE;--line:#E4E4EF;--muted:#6E6E8A;--text:#14142B}
+  *{box-sizing:border-box}
+  body{margin:0;height:100vh;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:52px 1fr 150px;font:13px/1.4 Inter,-apple-system,Segoe UI,sans-serif;color:var(--text);background:#F7F7FB}
+  header{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 14px;background:#fff;border-bottom:1px solid var(--line)}
+  header b{font-size:15px}
+  button{background:var(--purple);color:#fff;border:0;border-radius:7px;padding:7px 11px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.sec{background:#fff;color:var(--text);border:1px solid var(--line)}
+  #frame{position:relative;background:#000}
+  #frame img{width:100%;height:100%;object-fit:contain;display:block}
+  #frame .hud{position:absolute;left:10px;top:10px;background:rgba(0,0,0,.6);color:#fff;padding:4px 8px;border-radius:6px;font-family:ui-monospace,monospace}
+  #map{position:relative}
+  #mapdiv{width:100%;height:100%}
+  #map .help{position:absolute;left:10px;bottom:10px;background:rgba(255,255,255,.92);padding:6px 10px;border-radius:6px;font-size:12px;color:var(--muted);border:1px solid var(--line)}
+  #ctrl{grid-column:1/-1;display:grid;grid-template-columns:2fr 1fr;gap:12px;padding:10px 14px;background:#fff;border-top:1px solid var(--line)}
+  #timeline{display:flex;gap:3px;flex-wrap:wrap;align-content:flex-start;overflow:auto}
+  #timeline div{width:34px;height:22px;border-radius:4px;border:1px solid var(--line);font-size:10px;display:grid;place-items:center;cursor:pointer;color:var(--muted)}
+  #timeline div.edited{background:#EDE4FA;border-color:var(--purple);color:var(--purple);font-weight:600}
+  #timeline div.cur{outline:2px solid var(--purple)}
+  .fields{display:grid;grid-template-columns:auto 1fr auto;gap:6px 10px;align-items:center}
+  .fields input[type=range]{width:100%}
+  .fields span.v{font-family:ui-monospace,monospace;min-width:52px;text-align:right}
+  .drone{width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-bottom:26px solid var(--purple);filter:drop-shadow(0 0 3px #fff)}
+  .ghost{width:8px;height:8px;border-radius:50%;background:#fff;border:2px solid var(--purple);opacity:.7}
+  .status{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <b>Track calibrator</b><span class="status" id="status">loading…</span>
+  <span style="flex:1"></span>
+  <button class="sec" id="prev">◀ prev (←)</button>
+  <button class="sec" id="next">next (→) ▶</button>
+  <button class="sec" id="copy">copy previous keyframe (C)</button>
+  <button id="save">Save to telemetry.json</button>
+</header>
+<section id="frame"><img id="img" alt=""><div class="hud" id="hud"></div></section>
+<section id="map"><div id="mapdiv"></div>
+  <div class="help"><b>Click</b> map = drone position · <b>Shift+click</b> = point the camera at that spot (sets heading) · <b>[ ]</b> rotate 5° · path shows every keyframe</div>
+</section>
+<section id="ctrl">
+  <div id="timeline"></div>
+  <div class="fields">
+    <label>heading</label><input type="range" id="hdg" min="0" max="359" step="1"><span class="v" id="hdg-v"></span>
+    <label>altitude m</label><input type="range" id="alt" min="0" max="80" step="1"><span class="v" id="alt-v"></span>
+    <label>tilt ° (0 = level, 90 = straight down)</label><input type="range" id="tilt" min="0" max="90" step="1"><span class="v" id="tilt-v"></span>
+    <label>lat, lon</label><span id="ll" style="font-family:ui-monospace,monospace;grid-column:2/4"></span>
+  </div>
+</section>
+<script>
+const $ = s => document.querySelector(s);
+let kf = [], cur = 0, edited = new Set(), map, droneMarker, ghosts = [];
+const fmt = t => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+
+async function init() {
+  const d = await (await fetch('/api/keyframes')).json();
+  kf = d.keyframes;
+  $('#status').textContent = `${kf.length} keyframes · ${d.step}s cadence · pre-filled from current telemetry.json`;
+  map = new maplibregl.Map({
+    container: 'mapdiv', attributionControl: false,
+    style: { version: 8, sources: {
+      sat: { type: 'raster', tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], tileSize: 256, attribution: 'Esri' },
+      osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256 } },
+      layers: [{ id: 'sat', type: 'raster', source: 'sat' }, { id: 'osm', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.25 } }] },
+    center: [kf[0].lon, kf[0].lat], zoom: 18
+  });
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  new ResizeObserver(() => map.resize()).observe($('#mapdiv'));
+  let ready = false;
+  const setup = () => {  // idempotent; MapLibre's 'load' can fire before/without us
+    if (ready) return;
+    try {
+      map.resize();
+      if (!map.getSource('path')) map.addSource('path', { type: 'geojson', data: pathGeo() });
+      if (!map.getLayer('path')) map.addLayer({ id: 'path', type: 'line', source: 'path', paint: { 'line-color': '#6706CE', 'line-width': 3, 'line-opacity': .8 } });
+      if (!map.getSource('look')) map.addSource('look', { type: 'geojson', data: lookGeo() });
+      if (!map.getLayer('look')) map.addLayer({ id: 'look', type: 'line', source: 'look', paint: { 'line-color': '#FFB454', 'line-width': 2, 'line-dasharray': [2, 2] } });
+      if (!droneMarker) {
+        const el = document.createElement('div'); el.className = 'drone';
+        droneMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' }).setLngLat([kf[0].lon, kf[0].lat]).addTo(map);
+        kf.forEach((k, i) => { const g = document.createElement('div'); g.className = 'ghost'; g.title = fmt(k.t);
+          g.onclick = () => show(i); ghosts.push(new maplibregl.Marker({ element: g }).setLngLat([k.lon, k.lat]).addTo(map)); });
+      }
+      ready = true; show(cur);
+    } catch (e) { console.error('map setup retry on idle:', e); }
+  };
+  map.on('load', setup); map.on('idle', setup);
+  show(0);
+  map.on('click', e => {
+    const k = kf[cur];
+    if (e.originalEvent.shiftKey) {  // point camera at clicked spot
+      const dy = e.lngLat.lat - k.lat, dx = (e.lngLat.lng - k.lon) * Math.cos(k.lat * Math.PI / 180);
+      k.hdg = Math.round((Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360);
+    } else { k.lat = +e.lngLat.lat.toFixed(6); k.lon = +e.lngLat.lng.toFixed(6); }
+    edited.add(cur); show(cur);
+  });
+  buildTimeline();
+}
+const pathGeo = () => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: kf.map(k => [k.lon, k.lat]) } });
+function lookGeo() {
+  const k = kf[cur] || kf[0]; const r = Math.max(k.alt, 5) * 3 / 111320;  // ~3x altitude look line
+  const h = k.hdg * Math.PI / 180;
+  return { type: 'Feature', geometry: { type: 'LineString', coordinates: [[k.lon, k.lat], [k.lon + r * Math.sin(h) / Math.cos(k.lat * Math.PI / 180), k.lat + r * Math.cos(h)]] } };
+}
+function show(i) {
+  cur = Math.max(0, Math.min(kf.length - 1, i));
+  const k = kf[cur];
+  $('#img').src = `/frames/${String(k.t).padStart(4, '0')}.jpg`;
+  $('#hud').textContent = `${fmt(k.t)}  (keyframe ${cur + 1}/${kf.length})`;
+  $('#hdg').value = k.hdg; $('#hdg-v').textContent = `${k.hdg}°`;
+  $('#alt').value = k.alt; $('#alt-v').textContent = `${k.alt} m`;
+  $('#tilt').value = k.tilt; $('#tilt-v').textContent = `${k.tilt}°`;
+  $('#ll').textContent = `${k.lat.toFixed(6)}, ${k.lon.toFixed(6)}`;
+  if (droneMarker) {
+    droneMarker.setLngLat([k.lon, k.lat]).setRotation(k.hdg); ghosts[cur].setLngLat([k.lon, k.lat]);
+    if (map.getSource('path')) { map.getSource('path').setData(pathGeo()); map.getSource('look').setData(lookGeo()); }
+    const p = map.project([k.lon, k.lat]), w = map.getContainer().clientWidth, h = map.getContainer().clientHeight;
+    if (p.x < w * .15 || p.x > w * .85 || p.y < h * .15 || p.y > h * .85) map.easeTo({ center: [k.lon, k.lat], duration: 400 });
+  }
+  buildTimeline();
+}
+function buildTimeline() {
+  const tl = $('#timeline'); tl.innerHTML = '';
+  kf.forEach((k, i) => { const d = document.createElement('div'); d.textContent = fmt(k.t);
+    d.className = (edited.has(i) ? 'edited ' : '') + (i === cur ? 'cur' : ''); d.onclick = () => show(i); tl.appendChild(d); });
+}
+['hdg', 'alt', 'tilt'].forEach(f => $('#' + f).oninput = e => { kf[cur][f] = +e.target.value; edited.add(cur); show(cur); });
+$('#prev').onclick = () => show(cur - 1); $('#next').onclick = () => show(cur + 1);
+$('#copy').onclick = () => { if (cur > 0) { Object.assign(kf[cur], { lat: kf[cur - 1].lat, lon: kf[cur - 1].lon, hdg: kf[cur - 1].hdg, alt: kf[cur - 1].alt, tilt: kf[cur - 1].tilt }); edited.add(cur); show(cur); } };
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowLeft') show(cur - 1); else if (e.key === 'ArrowRight') show(cur + 1);
+  else if (e.key === '[') { kf[cur].hdg = (kf[cur].hdg + 355) % 360; edited.add(cur); show(cur); }
+  else if (e.key === ']') { kf[cur].hdg = (kf[cur].hdg + 5) % 360; edited.add(cur); show(cur); }
+  else if (e.key.toLowerCase() === 'c') $('#copy').click();
+});
+$('#save').onclick = async () => {
+  const r = await (await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keyframes: kf }) })).json();
+  $('#status').textContent = `saved ${r.waypoints} waypoints to ${r.saved} (backup: ${r.backup})`; edited.clear(); buildTimeline();
+};
+init();
+</script>
+</body>
+</html>

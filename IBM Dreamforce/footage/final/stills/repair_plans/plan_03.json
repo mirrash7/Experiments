@@ -1,0 +1,15 @@
+{
+ "src": "footage/final/stills/repair_plans/src_03_34s.jpg",
+ "out": "footage/final/stills/repair_plans/repair_plan_03.png",
+ "title": "Repair plan",
+ "plan": "Pole realignment",
+ "items": [
+  [
+   1,
+   950,
+   670,
+   1340,
+   855
+  ]
+ ]
+}

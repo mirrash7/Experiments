@@ -1,0 +1,121 @@
+{
+  "_note": "Curated report events for the post-storm pass: when playback reaches each `t`, that scene is reported using its supplied repair-plan render (`image`) verbatim. Built from footage/final/stills/repair_plans/plan_0*.json (rendered by scripts/repair_plan_still.py). Rewinding never adds or removes events.",
+  "scenes": [
+    {
+      "t": 1.5,
+      "title": "New pole \u00b7 New transformer",
+      "actions": [
+        "New pole",
+        "New transformer"
+      ],
+      "findings": [
+        {
+          "n": 1,
+          "title": "Pole down \u2014 replacement required",
+          "action": "New pole"
+        },
+        {
+          "n": 2,
+          "title": "Transformer down",
+          "action": "New transformer"
+        }
+      ],
+      "image": "footage/final/stills/repair_plans/repair_plan_01.png",
+      "id": "POLE-001"
+    },
+    {
+      "t": 20.0,
+      "title": "Ground crew \u00b7 New pole",
+      "actions": [
+        "Ground crew",
+        "New pole"
+      ],
+      "findings": [
+        {
+          "n": 1,
+          "title": "Stump still in the ground",
+          "action": "Ground crew"
+        },
+        {
+          "n": 2,
+          "title": "Pole down \u2014 replacement required",
+          "action": "New pole"
+        }
+      ],
+      "image": "footage/final/stills/repair_plans/repair_plan_02.png",
+      "id": "POLE-002"
+    },
+    {
+      "t": 29.0,
+      "title": "Ground crew \u00b7 New pole \u00b7 New transformer",
+      "actions": [
+        "Ground crew",
+        "New pole",
+        "New transformer"
+      ],
+      "findings": [
+        {
+          "n": 1,
+          "title": "Stump still in the ground",
+          "action": "Ground crew"
+        },
+        {
+          "n": 2,
+          "title": "Pole down \u2014 replacement required",
+          "action": "New pole"
+        },
+        {
+          "n": 3,
+          "title": "Transformer down",
+          "action": "New transformer"
+        }
+      ],
+      "image": "footage/final/stills/repair_plans/repair_plan_05.png",
+      "id": "POLE-003"
+    },
+    {
+      "t": 34.0,
+      "title": "Pole realignment",
+      "actions": [
+        "Pole realignment"
+      ],
+      "findings": [
+        {
+          "n": 1,
+          "title": "Pole out of plumb",
+          "action": "Pole realignment"
+        }
+      ],
+      "image": "footage/final/stills/repair_plans/repair_plan_03.png",
+      "id": "POLE-004"
+    },
+    {
+      "t": 42.0,
+      "title": "Ground crew \u00b7 New pole \u00b7 New transformer",
+      "actions": [
+        "Ground crew",
+        "New pole",
+        "New transformer"
+      ],
+      "findings": [
+        {
+          "n": 1,
+          "title": "Stump still in the ground",
+          "action": "Ground crew"
+        },
+        {
+          "n": 2,
+          "title": "Pole down \u2014 replacement required",
+          "action": "New pole"
+        },
+        {
+          "n": 3,
+          "title": "Transformer down",
+          "action": "New transformer"
+        }
+      ],
+      "image": "footage/final/stills/repair_plans/repair_plan_04.png",
+      "id": "POLE-005"
+    }
+  ]
+}

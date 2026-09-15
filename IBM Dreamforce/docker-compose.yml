@@ -1,0 +1,23 @@
+services:
+  command-center:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY}
+      MODEL_ID: ${MODEL_ID:-alexei-alexandrovich/broken-powerlines-4-rfdetr-seg-small-t1}
+      # hosted by default; point at the local inference container for offline stage use
+      INFERENCE_URL: ${INFERENCE_URL:-https://serverless.roboflow.com}
+      SF_WEBHOOK_URL: ${SF_WEBHOOK_URL:-}
+    volumes:
+      - ./footage/upscale/powerline-demo-1080:/srv/footage:ro
+      - ./app/runs:/srv/app/runs
+
+  # Optional: local Roboflow Inference server (no internet needed once the model is cached).
+  # Start with:  docker compose --profile local-inference up
+  # and set INFERENCE_URL=http://inference:9001
+  inference:
+    image: roboflow/roboflow-inference-server-cpu:latest
+    profiles: ["local-inference"]
+    ports: ["9001:9001"]
+    environment:
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY}

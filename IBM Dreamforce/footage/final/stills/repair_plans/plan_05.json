@@ -1,0 +1,29 @@
+{
+ "src": "footage/final/stills/repair_plans/src_05_29s.jpg",
+ "out": "footage/final/stills/repair_plans/repair_plan_05.png",
+ "title": "Repair plan",
+ "plan": "Ground crew   \u00b7   New pole   \u00b7   New transformer",
+ "items": [
+  [
+   1,
+   295,
+   695,
+   330,
+   1105
+  ],
+  [
+   2,
+   358,
+   1015,
+   1585,
+   1120
+  ],
+  [
+   3,
+   1328,
+   1025,
+   1448,
+   1092
+  ]
+ ]
+}

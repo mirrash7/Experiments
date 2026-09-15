@@ -1,0 +1,57 @@
+{
+  "_note": "Each flight = one clip + the model that runs on it (+ telemetry). api_key_env names an .env variable holding the API key for that model's workspace; omitted = ROBOFLOW_API_KEY. alert_classes = class names that count as 'line down' (default: any class containing 'broken'). show_classes = classes visible by default (all are still tracked; toggle in the UI). cache = pre-computed detections (scripts/precompute.py) so the demo plays instantly with no live inference dependency.",
+  "flights": [
+    {
+      "id": "pre-storm",
+      "drone_id": "Drone 1",
+      "name": "Pre-storm survey",
+      "description": "Springfield, MO \u00b7 baseline inspection flight",
+      "video": "footage/final/springfield_pre-storm.mp4",
+      "model_id": "jenniferworkspace/dreamforce-ibm-3-rfdetr-seg-medium-t2",
+      "api_key_env": "ROBOFLOW_API_KEY_JENNIFER",
+      "telemetry": "app/telemetry_springfield_pre.json",
+      "alert_classes": [
+        "fallen pole - wooden"
+      ],
+      "show_classes": [
+        "fallen pole - wooden",
+        "pole - wooden",
+        "metal pole"
+      ],
+      "cache": "app/cache/pre-storm.json"
+    },
+    {
+      "id": "post-storm",
+      "drone_id": "Drone 2",
+      "name": "Post-storm damage assessment",
+      "description": "Springfield, MO \u00b7 same street after the storm",
+      "video": "Outputs/REFERENCE-ONLY_instagram-reel_45s_2k_equalized.mp4",
+      "model_id": "jenniferworkspace/fallen-poles-ibm-2-rfdetr-seg-small-t1",
+      "api_key_env": "ROBOFLOW_API_KEY_JENNIFER",
+      "telemetry": "app/telemetry_springfield.json",
+      "alert_classes": [
+        "broken-wooden-pole"
+      ],
+      "show_classes": [
+        "broken-wooden-pole",
+        "leaning-wooden-pole",
+        "wooden-pole",
+        "metal-pole",
+        "hit-transformer",
+        "transformer"
+      ],
+      "cache": "app/cache/post-storm.json",
+      "detection": {
+        "identity": "track",
+        "min_hits": 5,
+        "incident_conf": 0.8,
+        "reacquire_s": 1.5,
+        "min_depression_deg": 0,
+        "incident_max_range_m": 200,
+        "same_pole_m": 10,
+        "_note": "straight corridor pass: tracker identity, not GPS de-dup"
+      },
+      "scenes": "app/scenes/post-storm.json"
+    }
+  ]
+}

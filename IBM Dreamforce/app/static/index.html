@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Storm Response Command Center</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<script>window.__errors = []; window.addEventListener('error', e => window.__errors.push((e.error && e.error.stack || String(e.message)).split('\n').slice(0, 5).join(' | ')));</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+<style>
+  /* Roboflow Workflows palette: light canvas, white cards, purple primary */
+  :root{--canvas:#F7F7FB;--dot:#D8D8E6;--card:#FFFFFF;--line:#E4E4EF;--text:#14142B;--muted:#6E6E8A;
+        --purple:#6706CE;--purple-dark:#5605AD;--purple-tint:#F1E9FC;--purple-line:#D9C6F5;
+        --red:#E5243B;--red-tint:#FDECEF;--amber:#B45309;--amber-tint:#FEF3C7;--green:#1DA462;--green-tint:#E6F6EE}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(var(--dot) 1px,transparent 1px) 0 0/18px 18px,var(--canvas);color:var(--text);
+       font:14px/1.45 Inter,-apple-system,Segoe UI,sans-serif;height:100vh;display:grid;
+       grid-template-rows:60px 1fr;gap:12px;padding:0 12px 12px}
+  header{display:flex;align-items:center;gap:14px;margin:0 -12px;padding:0 18px;background:var(--card);border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:17px;letter-spacing:-.01em}
+  .brand .mark{width:26px;height:26px;border-radius:7px;background:var(--purple);display:grid;place-items:center;color:#fff;font-size:15px;font-weight:800}
+  .divider{width:1px;height:28px;background:var(--line)}
+  header h1{font-size:15px;margin:0;font-weight:600;white-space:nowrap}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;background:var(--purple-tint);color:var(--purple);border:1px solid var(--purple-line);white-space:nowrap}
+  .chip.neutral{background:#F1F1F6;color:var(--muted);border-color:var(--line)}
+  .chip.live{background:var(--red-tint);color:var(--red);border-color:#F8C6CE}
+  .chip.live::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--red);animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.25}}
+  .spacer{flex:1}
+  /* flight selector — top of screen */
+  .tabs{display:flex;gap:6px;background:#F1F1F6;border:1px solid var(--line);border-radius:10px;padding:4px}
+  .tab{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 14px;border-radius:7px;cursor:pointer;border:1px solid transparent;background:transparent;font-family:inherit;text-align:left}
+  .tab b{font-size:13px;font-weight:700;color:var(--text)}
+  .tab span{font-size:11px;color:var(--muted)}
+  .tab.active{background:var(--card);border-color:var(--purple-line);box-shadow:0 1px 2px rgba(20,20,43,.06)}
+  .tab.active b{color:var(--purple)}
+  .tab:disabled{opacity:.45;cursor:default}
+  button{background:var(--purple);color:#fff;border:1px solid var(--purple);border-radius:8px;padding:8px 12px;font-weight:600;cursor:pointer;font-size:13px;font-family:inherit}
+  button:hover{background:var(--purple-dark)}
+  button.secondary{background:#fff;color:var(--text);border-color:var(--line)}
+  button.secondary:hover{background:#F5F5FA}
+  button.danger{background:#fff;color:var(--red);border-color:#F8C6CE}
+  button:disabled{opacity:.45;cursor:default}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;overflow:hidden;display:flex;flex-direction:column;min-height:0;box-shadow:0 1px 2px rgba(20,20,43,.04)}
+  .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:0;font-weight:600}
+  /* main row: video takes the page, map rides along */
+  #main{display:grid;grid-template-columns:3.2fr 1fr;gap:12px;min-height:0;transition:grid-template-columns .25s}
+  body.plans-open #main{grid-template-columns:2fr 1.35fr}
+  #right{position:relative;min-height:0;display:flex}
+  #right > .panel{flex:1;min-width:0}
+  #plans{position:absolute;inset:0;z-index:5;display:none;flex-direction:column}
+  body.plans-open #plans{display:flex}
+  #video{position:relative;background:#0F0F1A;padding:0;border-color:#0F0F1A;display:flex;flex-direction:column}
+  #video img{width:100%;flex:1;min-height:0;object-fit:contain;display:block}
+  #video .hud{position:absolute;top:10px;left:10px;display:flex;gap:8px}
+  #video .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9A9AB5}
+  #scrub{display:none;align-items:center;gap:10px;padding:7px 12px;background:#12121f;border-top:1px solid #23233a;color:#C9C9DE;font-size:12px}
+  body.seekable #scrub{display:flex}
+  #scrub input[type=range]{flex:1;accent-color:var(--purple);cursor:pointer}
+  #scrub .tick{color:#8A8AA8;font-family:ui-monospace,Menlo,monospace}
+  #classbar{display:flex;gap:6px;flex-wrap:wrap;padding:6px 10px;background:#161626;border-top:1px solid #23233a;min-height:34px;align-items:center}
+  #classbar .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#8A8AA8;margin-right:4px}
+  .cls{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;background:#23233a;color:#E8E8F4;user-select:none}
+  .cls .dot{width:9px;height:9px;border-radius:50%}
+  .cls .n{color:#A0A0BC;font-weight:500}
+  .cls.off{opacity:.4;text-decoration:line-through}
+  .cls.alert{border-color:var(--red)}
+  #map{padding:0;position:relative}
+  #mapdiv{width:100%;height:100%;border-radius:12px}
+  #globe{position:absolute;inset:0;border-radius:12px;background:radial-gradient(circle at 50% 40%,#1a1140 0%,#0F0F1A 70%);display:flex;align-items:center;justify-content:center;overflow:hidden}
+  #globe canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+  #globe .cap{position:relative;z-index:1;color:#C9B8F2;font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;margin-top:190px;opacity:.9;text-align:center}
+  #globe .cap::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:#A78BFA;margin-right:8px;animation:pulse 1.6s infinite;vertical-align:1px}
+  /* repair-plan cards */
+  #report{padding:12px 14px}
+  .rep-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  #cards{display:flex;flex-direction:column;gap:10px;overflow-y:auto;overflow-x:hidden;flex:1;padding-right:4px}
+  #cards .empty{color:var(--muted);font-size:13px;align-self:center}
+  .card{display:flex;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px;background:#FAFAFD;flex:0 0 auto}
+  .card .shot{position:relative;flex:0 0 190px;cursor:zoom-in}
+  .card .shot img{width:190px;height:107px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block;background:#0F0F1A}
+  .card .shot .hint{position:absolute;right:5px;bottom:5px;background:rgba(16,6,51,.78);color:#fff;font-size:9.5px;padding:2px 5px;border-radius:5px}
+  .card .side{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+  .card .idline{display:flex;align-items:center;gap:8px}
+  .card .idline b{font-size:14px}
+  .pri{padding:2px 8px;border-radius:6px;font-weight:700;font-size:11px}
+  .P1{background:var(--red-tint);color:var(--red)} .P2{background:var(--amber-tint);color:var(--amber)}
+  .actions{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;overflow-y:auto;min-height:0}
+  .actions li{display:flex;gap:7px;align-items:flex-start;font-size:12.5px;line-height:1.35}
+  .actions .num{flex:0 0 17px;height:17px;border-radius:5px;background:var(--purple);color:#fff;font-size:10.5px;font-weight:700;display:grid;place-items:center;margin-top:1px}
+  .actions .ttl{font-weight:600}
+  .actions .act{color:var(--muted)}
+  .card .meta{margin-top:6px;flex:0 0 auto;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+  .st-dispatched{color:var(--green);font-weight:600;background:var(--green-tint);padding:2px 8px;border-radius:6px;font-family:Inter,sans-serif}
+  /* hover zoom */
+  #zoom{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(16,6,51,.72);z-index:60;cursor:zoom-out}
+  #zoom img{max-width:88vw;max-height:88vh;border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.5)}
+  .marker{width:16px;height:16px;border-radius:50%;background:var(--red);border:2px solid #fff;box-shadow:0 0 0 6px rgba(229,36,59,.25)}
+  .drone-marker{width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:22px solid var(--purple);filter:drop-shadow(0 1px 3px rgba(0,0,0,.4))}
+  .maplibregl-popup-content{background:var(--card);color:var(--text);border-radius:10px;padding:10px;border:1px solid var(--line);font-family:inherit}
+  .maplibregl-popup-content img{width:260px;border-radius:6px;display:block;margin-top:6px}
+  .toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--purple-line);border-left:4px solid var(--purple);color:var(--text);padding:12px 16px;border-radius:10px;box-shadow:0 10px 30px rgba(20,20,43,.15);opacity:0;transition:.3s;font-weight:500;z-index:70}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="mark">R</span>roboflow</div>
+  <span class="divider"></span>
+  <h1>Storm Response Command Center</h1>
+  <div class="tabs" id="flighttabs"></div>
+  <button id="stop" class="danger" disabled>Disconnect</button>
+  <button id="toggle-plans" class="secondary">Repair plans <span id="plan-badge"></span></button>
+  <button id="upload-btn" class="secondary">Upload</button>
+  <input type="file" id="file" accept="video/*" hidden>
+  <span class="spacer"></span>
+  <span id="live" class="chip neutral">OFFLINE</span>
+  <span class="chip neutral" id="clock">T+0.0s</span>
+</header>
+
+<section id="main">
+  <div class="panel" id="video">
+    <div class="placeholder" id="ph">Select a drone above to begin</div>
+    <img id="feed" alt="" hidden>
+    <div class="hud"><span class="chip" id="det-badge">0 active detections</span></div>
+    <div id="scrub">
+      <span class="tick" id="scrub-now">0:00</span>
+      <input type="range" id="scrub-range" min="0" max="100" step="0.1" value="0">
+      <span class="tick" id="scrub-end">0:00</span>
+      <span style="color:#8A8AA8">review · drag to scrub</span>
+    </div>
+    <div id="classbar"><span class="lbl">Classes</span><span style="color:#8A8AA8;font-size:12px">appear as the model detects them · click to show/hide</span></div>
+  </div>
+  <div id="right">
+    <div class="panel" id="map"><div id="mapdiv"></div><div id="globe"><div class="cap">Awaiting drone link</div></div></div>
+    <div class="panel" id="plans">
+      <div class="rep-head">
+        <h2>Repair plans <span id="rep-count" style="color:var(--text)"></span></h2>
+        <span class="spacer"></span>
+        <button id="dispatch-all" disabled>Dispatch all</button>
+        <button id="report-btn" class="secondary" disabled>Report</button>
+        <button id="close-plans" class="secondary">Close</button>
+      </div>
+      <div id="cards"><div class="empty">Reported poles appear here, each with its repair plan and the actions it needs.</div></div>
+    </div>
+  </div>
+</section>
+
+
+<div class="toast" id="toast"></div>
+<div id="zoom"><img id="zoom-img" alt=""></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const incidents = new Map();
+let map, droneMarker, flownCoords = [], mapReady = false, homeCoord = null;
+const pendingMarkers = [], markers = new Map();
+
+// ---------- globe (until the drone reports a position) ----------
+let globeAnim = null;
+function startGlobe() {
+  const host = $('#globe'); if (!host) return;
+  const w = host.clientWidth || 400, h = host.clientHeight || 300;
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(w, h); renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  host.prepend(renderer.domElement);
+  const scene = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(40, w / h, 0.1, 100); cam.position.set(0, 0.6, 4.2); cam.lookAt(0, 0, 0);
+  const globe = new THREE.Group();
+  globe.add(new THREE.Mesh(new THREE.SphereGeometry(1.2, 48, 48), new THREE.MeshBasicMaterial({ color: 0x6706CE, wireframe: true, transparent: true, opacity: 0.16 })));
+  const pts = [], r = 1.205;
+  for (let i = 0; i < 1400; i++) { const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u); pts.push(r * s * Math.cos(th), r * u, r * s * Math.sin(th)); }
+  globe.add(new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)), new THREE.PointsMaterial({ color: 0xA78BFA, size: 0.018, transparent: true, opacity: 0.85 })));
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1.75, 0.006, 8, 120), new THREE.MeshBasicMaterial({ color: 0xA78BFA, transparent: true, opacity: 0.5 }));
+  ring.rotation.x = Math.PI / 2.4; globe.add(ring);
+  const sat = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff })); globe.add(sat);
+  scene.add(globe);
+  let t = 0;
+  const tick = () => { t += 0.004; globe.rotation.y += 0.0035; sat.position.set(1.75 * Math.cos(t * 3), Math.sin(t * 3) * 1.75 * Math.sin(Math.PI / 2.4) * -0.4, 1.75 * Math.sin(t * 3) * 0.8); renderer.render(scene, cam); globeAnim = requestAnimationFrame(tick); };
+  tick();
+  new ResizeObserver(() => { const W = host.clientWidth, H = host.clientHeight; if (W && H) { renderer.setSize(W, H); cam.aspect = W / H; cam.updateProjectionMatrix(); } }).observe(host);
+}
+function stopGlobe() { if (globeAnim) cancelAnimationFrame(globeAnim); globeAnim = null; const g = $('#globe'); if (g) g.remove(); }
+
+// ---------- flights ----------
+let flights = [], selectedFlight = null;
+async function initUI() {
+  const cfg = await (await fetch('/api/config')).json();
+  flights = cfg.flights; selectedFlight = flights[0];
+  renderTabs();
+  startGlobe();
+}
+function renderTabs() {
+  if (!flights.length) return;
+  $('#flighttabs').innerHTML = flights.map(f => `
+    <button class="tab${selectedFlight && f.id === selectedFlight.id ? ' active' : ''}" id="tab-${f.id}"
+            onclick="connectFlight('${f.id}')" ${f.available ? '' : 'disabled'}>
+      <b>${f.drone_id}</b><span>${f.name}</span></button>`).join('');
+}
+async function connectFlight(id) {
+  selectedFlight = flights.find(f => f.id === id); renderTabs();
+  $('#live').textContent = 'CONNECTING'; $('#live').className = 'chip neutral';
+  await new Promise(r => setTimeout(r, 700));  // handshake theatre
+  const r = await fetch('/api/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flight: id }) });
+  if (!r.ok) { const e = await r.json().catch(() => ({})); $('#live').textContent = 'OFFLINE'; toast(`⚠️ ${e.detail || 'connect failed'}`); }
+}
+
+// ---------- map ----------
+function ensureMap(lngLat) {
+  if (map) return;
+  stopGlobe();
+  homeCoord = lngLat;
+  map = new maplibregl.Map({
+    container: 'mapdiv',
+    style: { version: 8, sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap' } },
+             layers: [{ id: 'osm', type: 'raster', source: 'osm' }] },
+    center: lngLat, zoom: 17, pitch: 45, bearing: -10, attributionControl: false
+  });
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  new ResizeObserver(() => map.resize()).observe($('#mapdiv'));
+  const setup = () => {
+    if (mapReady) return;
+    try {
+      map.resize();
+      if (!map.getSource('flown')) map.addSource('flown', { type: 'geojson', data: line(flownCoords) });
+      if (!map.getLayer('flown')) map.addLayer({ id: 'flown', type: 'line', source: 'flown', paint: { 'line-color': '#6706CE', 'line-width': 4 } });
+      if (!droneMarker) {
+        const el = document.createElement('div'); el.className = 'drone-marker';
+        droneMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' }).setLngLat(homeCoord).addTo(map);
+      }
+      mapReady = true;
+      pendingMarkers.splice(0).forEach(addIncidentMarker);
+    } catch (e) { console.error('map setup retry on idle:', e); }
+  };
+  map.on('load', setup); map.on('idle', setup);
+}
+const line = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords } });
+function addIncidentMarker(inc) {
+  const el = document.createElement('div'); el.className = 'marker';
+  const popup = new maplibregl.Popup({ offset: 14, closeButton: false }).setHTML(
+    `<b>${inc.id}</b> · <span class="pri ${inc.severity}">${inc.severity}</span> · ${(inc.confidence * 100).toFixed(0)}%<br>
+     <span style="color:#6E6E8A">${inc.lat.toFixed(5)}, ${inc.lon.toFixed(5)}</span>
+     <img src="/api/incidents/${inc.id}/plan?v=${inc.best_t || inc.t}" onerror="this.src='/api/incidents/${inc.id}/screenshot?v='+(inc.best_t||inc.t)">`);
+  markers.set(inc.id, new maplibregl.Marker({ element: el }).setLngLat([inc.lon, inc.lat]).setPopup(popup).addTo(map));
+}
+function followDrone(lngLat) {
+  const p = map.project(lngLat), w = map.getContainer().clientWidth, h = map.getContainer().clientHeight;
+  if (p.x < w * .2 || p.x > w * .8 || p.y < h * .2 || p.y > h * .8) map.easeTo({ center: lngLat, duration: 800 });
+}
+
+// ---------- class filter bar ----------
+let hiddenClasses = new Set(), classBarKey = '';
+function renderClassBar(classes) {
+  const names = Object.keys(classes).sort((a, b) => (classes[b].alert - classes[a].alert) || a.localeCompare(b));
+  hiddenClasses = new Set(names.filter(n => classes[n].hidden));
+  const key = names.join('|'); const bar = $('#classbar');
+  if (key !== classBarKey) {
+    classBarKey = key;
+    bar.innerHTML = '<span class="lbl">Classes</span>' + names.map(n => `
+      <span class="cls${classes[n].alert ? ' alert' : ''}${classes[n].hidden ? ' off' : ''}" data-cls="${n}" onclick="toggleClass(this.dataset.cls)">
+        <span class="dot" style="background:${classes[n].color}"></span>${n}<span class="n" id="cnt-${cssId(n)}"></span></span>`).join('');
+  }
+  names.forEach(n => { const c = $('#cnt-' + cssId(n)); if (c) c.textContent = classes[n].live ? `· ${classes[n].live}` : '';
+    const chip = bar.querySelector(`[data-cls="${n}"]`); if (chip) chip.classList.toggle('off', classes[n].hidden); });
+}
+const cssId = s => s.replace(/[^a-z0-9]/gi, '_');
+async function toggleClass(name) {
+  if (hiddenClasses.has(name)) hiddenClasses.delete(name); else hiddenClasses.add(name);
+  const chip = document.querySelector(`#classbar [data-cls="${name}"]`); if (chip) chip.classList.toggle('off', hiddenClasses.has(name));
+  await fetch('/api/filters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden: [...hiddenClasses] }) });
+}
+
+// ---------- events ----------
+function connectEvents() {
+  const es = new EventSource('/events');
+  es.onmessage = e => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'status') onStatus(ev);
+    else if (ev.type === 'telemetry') onTelemetry(ev);
+    else if (ev.type === 'incident') onIncident(ev);
+    else if (ev.type === 'incident_update') onIncidentUpdate(ev);
+    else if (ev.type === 'dispatched') onDispatched(ev);
+  };
+}
+function onStatus(ev) {
+  if (ev.state === 'connected') {
+    document.body.classList.remove('seekable');
+    $('#live').textContent = ev.mode === 'drone' ? 'LIVE · ' + ev.drone_id : 'PROCESSING UPLOAD';
+    $('#live').className = 'chip live';
+    if (ev.flight) { selectedFlight = flights.find(f => f.id === ev.flight) || selectedFlight; renderTabs(); }
+    $('#feed').src = '/stream.mjpg?' + Date.now(); $('#feed').hidden = false; $('#ph').style.display = 'none';
+    $('#stop').disabled = false;
+    incidents.clear(); markers.forEach(m => m.remove()); markers.clear(); pendingMarkers.length = 0; $('#cards').innerHTML = '<div class="empty">Scanning…</div>';
+    flownCoords = []; updateCounts();
+    classBarKey = ''; hiddenClasses = new Set(); $('#classbar').innerHTML = '<span class="lbl">Classes</span>';
+    if (mapReady) map.getSource('flown').setData(line([]));
+  } else if (ev.state === 'ended') {
+    $('#live').textContent = 'FLIGHT COMPLETE'; $('#live').className = 'chip neutral';
+    if (ev.seekable) {   // rejoining a finished pass: show its last rendered frame
+      $('#feed').src = '/stream.mjpg?' + Date.now(); $('#feed').hidden = false; $('#ph').style.display = 'none';
+    }
+    $('#stop').disabled = true;
+    if (ev.seekable && ev.duration) {
+      document.body.classList.add('seekable');
+      $('#scrub-range').max = ev.duration.toFixed(1);
+      $('#scrub-end').textContent = fmtTime(ev.duration);
+    }
+    if (!incidents.size) $('#cards').innerHTML = '<div class="empty">Flight complete — no downed poles found on this pass.</div>';
+    toast(`Flight complete — ${ev.incidents} downed-line incident(s) logged`);
+  }
+}
+function onTelemetry(ev) {
+  $('#clock').textContent = `T+${ev.t.toFixed(1)}s`;
+  if (ev.review) { $('#scrub-range').value = ev.t; $('#scrub-now').textContent = fmtTime(ev.t); }
+  $('#det-badge').textContent = `${ev.active_detections} active detections`;
+  if (ev.classes) renderClassBar(ev.classes);
+  ensureMap([ev.lon, ev.lat]);
+  flownCoords.push([ev.lon, ev.lat]);
+  if (droneMarker) droneMarker.setLngLat([ev.lon, ev.lat]).setRotation(ev.heading);
+  if (mapReady) { map.getSource('flown').setData(line(flownCoords)); followDrone([ev.lon, ev.lat]); }
+}
+function cardHTML(inc) {
+  const findings = inc.findings || [];
+  const list = findings.length ? findings.map(f => `
+      <li><span class="num">${f.n}</span><span><span class="ttl">${f.title}</span> — <span class="act">${f.action}</span></span></li>`).join('')
+    : '<li><span class="act">Assessment pending</span></li>';
+  return `<div class="shot" onclick="zoomIn('${inc.id}')">
+      <img id="plan-${inc.id}" src="/api/incidents/${inc.id}/plan?v=${inc.best_t || inc.t}"
+           onerror="setTimeout(()=>{this.src='/api/incidents/${inc.id}/plan?r='+Date.now()},900)">
+      <span class="hint">click to enlarge</span></div>
+    <div class="side">
+      <div class="idline"><b>${inc.id}</b><span class="pri ${inc.severity}">${inc.severity}</span>
+        <span style="font-size:12px;color:var(--muted)">${(inc.confidence * 100).toFixed(0)}% confidence</span>
+        <span class="spacer"></span><span id="st-${inc.id}"></span></div>
+      <ul class="actions">${list}</ul>
+      <div class="meta">${inc.lat.toFixed(5)}, ${inc.lon.toFixed(5)} ·
+        <a href="#" onclick="seekTo(${inc.t});return false" style="color:var(--purple);text-decoration:none">T+${inc.t}s ⟲</a>
+        <span class="spacer"></span>
+        <button class="secondary" id="btn-${inc.id}" onclick="dispatch(['${inc.id}'])">Dispatch</button></div>
+    </div>`;
+}
+function onIncident(inc) {
+  if (incidents.has(inc.id)) return;
+  incidents.set(inc.id, inc);
+  if (mapReady) addIncidentMarker(inc); else pendingMarkers.push(inc);
+  const empty = $('#cards .empty'); if (empty) empty.remove();
+  const el = document.createElement('div'); el.className = 'card'; el.id = 'card-' + inc.id;
+  el.innerHTML = cardHTML(inc);
+  $('#cards').prepend(el);
+  updateCounts();
+  toast(`🚨 ${inc.id}: line down (${inc.severity}, ${(inc.confidence * 100).toFixed(0)}%)`);
+}
+function onIncidentUpdate(inc) {
+  incidents.set(inc.id, inc);
+  const m = markers.get(inc.id); if (m) m.setLngLat([inc.lon, inc.lat]);
+  const el = $('#card-' + inc.id);
+  if (el) {
+    const dispatched = $('#st-' + inc.id) && $('#st-' + inc.id).textContent.trim();
+    el.innerHTML = cardHTML(inc);
+    if (dispatched) { $('#st-' + inc.id).innerHTML = `<span class="st-dispatched">${dispatched}</span>`; $('#btn-' + inc.id).disabled = true; }
+  }
+}
+function onDispatched(ev) {
+  const st = $('#st-' + ev.id); if (st) st.innerHTML = `<span class="st-dispatched">${ev.work_order || 'sent'}</span>`;
+  const b = $('#btn-' + ev.id); if (b) b.disabled = true;
+  toast(`✅ Salesforce work order ${ev.work_order || ''} created for ${ev.id}`);
+}
+const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+let seekTimer;
+$('#scrub-range').oninput = e => {
+  const t = +e.target.value;
+  $('#scrub-now').textContent = fmtTime(t);
+  clearTimeout(seekTimer);
+  seekTimer = setTimeout(() => fetch('/api/seek', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                   body: JSON.stringify({ t }) }), 60);
+};
+function seekTo(t) {                     // jump the review playhead to an incident
+  if (!document.body.classList.contains('seekable')) return;
+  $('#scrub-range').value = t; $('#scrub-now').textContent = fmtTime(t);
+  fetch('/api/seek', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ t }) });
+}
+function updateCounts() {
+  $('#rep-count').textContent = incidents.size ? `· ${incidents.size}` : '';
+  $('#plan-badge').textContent = incidents.size ? `· ${incidents.size}` : '';
+  $('#dispatch-all').disabled = incidents.size === 0; $('#report-btn').disabled = incidents.size === 0;
+}
+function togglePlans(open) {
+  const on = open === undefined ? !document.body.classList.contains('plans-open') : open;
+  document.body.classList.toggle('plans-open', on);
+  if (map) setTimeout(() => map.resize(), 260);   // the map column resized under it
+}
+$('#toggle-plans').onclick = () => togglePlans();
+$('#close-plans').onclick = () => togglePlans(false);
+
+// ---------- hover zoom ----------
+function zoomIn(id) {
+  const src = ($('#plan-' + id) || {}).src; if (!src) return;
+  $('#zoom-img').src = src; $('#zoom').style.display = 'flex';
+}
+function zoomOut() { $('#zoom').style.display = 'none'; }
+$('#zoom').onclick = zoomOut;
+document.addEventListener('keydown', e => { if (e.key === 'Escape') zoomOut(); });
+
+// ---------- controls ----------
+$('#stop').onclick = () => fetch('/api/stop', { method: 'POST' });
+$('#upload-btn').onclick = () => $('#file').click();
+$('#file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  toast(`Uploading ${f.name}…`);
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/api/upload?flight=' + encodeURIComponent(selectedFlight.id), { method: 'POST', body: fd });
+  if (!r.ok) { const err = await r.json().catch(() => ({})); toast(`⚠️ ${err.detail || 'upload failed'}`); }
+};
+async function dispatch(ids) { await fetch('/api/salesforce/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }); }
+$('#dispatch-all').onclick = () => dispatch(null);
+$('#report-btn').onclick = () => window.open('/api/report.html', '_blank');
+let toastTimer;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3500); }
+
+initUI(); connectEvents();
+</script>
+</body>
+</html>

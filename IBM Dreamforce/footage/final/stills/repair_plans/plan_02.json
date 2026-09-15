@@ -1,0 +1,22 @@
+{
+ "src": "footage/final/stills/repair_plans/src_02_20s.jpg",
+ "out": "footage/final/stills/repair_plans/repair_plan_02.png",
+ "title": "Repair plan",
+ "plan": "Ground crew   \u00b7   New pole",
+ "items": [
+  [
+   1,
+   0,
+   770,
+   120,
+   1110
+  ],
+  [
+   2,
+   190,
+   880,
+   1720,
+   1110
+  ]
+ ]
+}
