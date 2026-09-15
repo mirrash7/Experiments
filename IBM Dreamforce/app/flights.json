@@ -11,7 +11,8 @@
       "api_key_env": "ROBOFLOW_API_KEY_JENNIFER",
       "telemetry": "app/telemetry_springfield_pre.json",
       "annotated": true,
-      "scenes": "app/scenes/pre-storm.json"
+      "scenes": "app/scenes/pre-storm.json",
+      "plans_label": "Maintenance plans"
     },
     {
       "id": "post-storm",

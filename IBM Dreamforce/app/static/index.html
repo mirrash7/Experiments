@@ -139,7 +139,7 @@
     <div class="panel" id="map"><div id="mapdiv"></div><div id="globe"><div class="cap">Awaiting drone link</div></div></div>
     <div class="panel" id="plans">
       <div class="rep-head">
-        <h2>Repair plans <span id="rep-count" style="color:var(--text)"></span></h2>
+        <h2 id="rep-head-title">Repair plans <span id="rep-count" style="color:var(--text)"></span></h2>
         <span class="spacer"></span>
         <button id="dispatch-all" disabled>Dispatch all</button>
         <button id="report-btn" class="secondary" disabled>Report</button>
@@ -253,6 +253,13 @@ function followDrone(lngLat) {
 }
 
 // ---------- class filter bar ----------
+// a baseline survey reports maintenance, a storm pass reports repairs
+function setPlansLabel(label) {
+  const l = label || 'Repair plans';
+  $('#toggle-plans').childNodes[0].nodeValue = l + ' ';
+  $('#rep-head-title').childNodes[0].nodeValue = l + ' ';
+}
+
 let hiddenClasses = new Set(), classBarKey = '';
 function renderClassBar(classes) {
   const names = Object.keys(classes).sort((a, b) => (classes[b].alert - classes[a].alert) || a.localeCompare(b));
@@ -293,6 +300,7 @@ function onStatus(ev) {
     $('#live').textContent = ev.mode === 'drone' ? 'LIVE · ' + ev.drone_id : 'PROCESSING UPLOAD';
     $('#live').className = 'chip live';
     if (ev.flight) { selectedFlight = flights.find(f => f.id === ev.flight) || selectedFlight; renderTabs(); }
+    setPlansLabel(selectedFlight && selectedFlight.plans_label);
     $('#feed').src = '/stream.mjpg?' + Date.now(); $('#feed').hidden = false; $('#ph').style.display = 'none';
     $('#stop').disabled = false;
     incidents.clear(); markers.forEach(m => m.remove()); markers.clear(); pendingMarkers.length = 0; $('#cards').innerHTML = '<div class="empty">Scanning…</div>';

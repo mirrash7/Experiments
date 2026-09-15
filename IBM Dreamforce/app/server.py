@@ -30,7 +30,8 @@ def flight_by_id(flight_id: Optional[str]):
 
 
 def public_flight(f):
-    return {k: f[k] for k in ("id", "drone_id", "name", "description", "model_id", "available") if k in f} | \
+    return {k: f[k] for k in ("id", "drone_id", "name", "description", "model_id", "available",
+                             "plans_label") if k in f} | \
         {"video": os.path.basename(f["video_path"]),
          "cached": bool(f.get("cache")) and (ROOT / f["cache"]).exists()}
 
