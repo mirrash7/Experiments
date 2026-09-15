@@ -1,24 +1,17 @@
 {
-  "_note": "Each flight = one clip + the model that runs on it (+ telemetry). api_key_env names an .env variable holding the API key for that model's workspace; omitted = ROBOFLOW_API_KEY. alert_classes = class names that count as 'line down' (default: any class containing 'broken'). show_classes = classes visible by default (all are still tracked; toggle in the UI). cache = pre-computed detections (scripts/precompute.py) so the demo plays instantly with no live inference dependency.",
+  "_note": "Each flight = one clip + the model that runs on it (+ telemetry). api_key_env names an .env variable holding the API key for that model's workspace; omitted = ROBOFLOW_API_KEY. alert_classes = class names that count as 'line down' (default: any class containing 'broken'). show_classes = classes visible by default (all are still tracked; toggle in the UI). cache = pre-computed detections (scripts/precompute.py) so the demo plays instantly with no live inference dependency. annotated = the clip already has the model's render burned in, so play it untouched and draw nothing over it.",
   "flights": [
     {
       "id": "pre-storm",
       "drone_id": "Drone 1",
       "name": "Pre-storm survey",
       "description": "Springfield, MO \u00b7 baseline inspection flight",
-      "video": "footage/final/springfield_pre-storm.mp4",
+      "video": "footage/final/springfield_pre-storm_annotated.mp4",
       "model_id": "jenniferworkspace/dreamforce-ibm-3-rfdetr-seg-medium-t2",
       "api_key_env": "ROBOFLOW_API_KEY_JENNIFER",
       "telemetry": "app/telemetry_springfield_pre.json",
-      "alert_classes": [
-        "fallen pole - wooden"
-      ],
-      "show_classes": [
-        "fallen pole - wooden",
-        "pole - wooden",
-        "metal pole"
-      ],
-      "cache": "app/cache/pre-storm.json"
+      "annotated": true,
+      "scenes": "app/scenes/pre-storm.json"
     },
     {
       "id": "post-storm",

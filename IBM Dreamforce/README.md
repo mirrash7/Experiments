@@ -6,7 +6,7 @@ Two flights over the same stretch of **N Farm Road 159 / N Summit Road, Springfi
 
 | | | |
 |---|---|---|
-| **Drone 1** | Pre-storm survey | 15 s baseline pass — reports nothing, which is the point |
+| **Drone 1** | Pre-storm survey | 15 s baseline pass — reports two preventative-maintenance jobs |
 | **Drone 2** | Post-storm damage assessment | 45 s pass — reports five downed poles with repair plans |
 
 ## Setup
@@ -34,13 +34,13 @@ Docker works too: `ROBOFLOW_API_KEY_JENNIFER=... docker compose up --build`.
 
 ## What happens in the demo
 
-1. Click **Drone 2** in the header. A short handshake, then the clip plays at native speed as if
-   it were the drone's RTMP feed, with detections drawn live (masks, `LINE DOWN 85%` labels).
-   The map stays a spinning globe until the drone reports its first position, then follows it
-   down the road.
-2. At five points in the clip a **report event** fires (1.5 s, 20 s, 29 s, 34 s, 42 s), each one
-   using its pre-made repair-plan render. Open them with **Repair plans** in the header; they
-   overlay the map. Click a plan image to enlarge it.
+1. Click a drone in the header. A short handshake, then the clip plays at native speed as if it
+   were the drone's RTMP feed, with the detections drawn on it. The map stays a spinning globe
+   until the drone reports its first position, then follows it down the road.
+2. **Report events** fire at fixed points in the clip, each using its pre-made render. Drone 2
+   reports five downed poles (1.5 s, 20 s, 29 s, 34 s, 42 s); Drone 1 reports two maintenance
+   jobs — vegetation into the span (4.1 s) and a pole out of plumb (10.7 s). Open them with
+   **Repair plans** in the header; they overlay the map. Click a plan image to enlarge it.
 3. **Dispatch** on a card (or **Dispatch all**) creates a Salesforce work order. With no
    `SF_WEBHOOK_URL` set it goes to a built-in inbox (`GET /api/salesforce/inbox`) and mints
    `WO-0000n` numbers, so the flow works with no external dependency.
@@ -48,25 +48,29 @@ Docker works too: `ROBOFLOW_API_KEY_JENNIFER=... docker compose up --build`.
    card's timestamp, to re-render any frame with its detections. Rewinding never adds or
    removes report events.
 
-Detections are **pre-computed** into `app/cache/*.json`, so playback is instant, identical every
-time, and needs no network. Map tiles come from OpenStreetMap and do need internet.
+Neither flight calls the API. Drone 2's detections are **pre-computed** into `app/cache/*.json`
+and replayed; Drone 1's clip is **already annotated** (the model's masks, labels and counter panel
+are burned into `footage/final/springfield_pre-storm_annotated.mp4`), so the app plays it untouched
+and draws nothing over it. Playback is instant and identical every time. Map tiles come from
+OpenStreetMap and do need internet.
 
-## Why it always finds exactly five poles
+## Why it always reports exactly those scenes
 
-The five report events are **curated**, not detector-driven: `app/scenes/post-storm.json` maps
-each timestamp to one of the renders in `footage/final/stills/repair_plans/`, which are served
+Report events are **curated**, not detector-driven: `app/scenes/post-storm.json` and
+`app/scenes/pre-storm.json` map each timestamp to a render in
+`footage/final/stills/repair_plans/` / `footage/final/stills/maintenance_plans/`, served
 byte-for-byte. The detector still drives everything you see on the video; it just doesn't decide
 what gets reported. That makes the demo deterministic on stage.
 
-To change a plan: edit its spec (`plan_0*.json` — boxes are in source pixels, 2560×1440) and
+To change a plan: edit its spec (`plan_*.json` — boxes are in source pixels, 2560×1440) and
 re-render:
 
 ```bash
 ./.venv/bin/python3 scripts/repair_plan_still.py footage/final/stills/repair_plans/plan_03.json
 ```
 
-To change which scene fires when, edit `t` in `app/scenes/post-storm.json`. Drop the `scenes`
-key from a flight in `app/flights.json` to go back to detector-driven incidents.
+To change which scene fires when, edit `t` in the flight's scenes file. Drop the `scenes` key
+from a flight in `app/flights.json` to go back to detector-driven incidents.
 
 ## File map
 
@@ -76,11 +80,12 @@ app/pipeline.py          playback, detection replay, tracking, scene firing, rev
 app/assessment.py        findings rules + branded repair-plan renderer
 app/static/index.html    the whole UI
 app/flights.json         the two drones: clip + model + telemetry + detection settings
-app/scenes/post-storm.json   the five curated report events
+app/scenes/*.json        the curated report events (5 post-storm, 2 pre-storm)
 app/cache/*.json         pre-computed detections (one per flight)
 app/telemetry_springfield*.json   flight tracks along the road centreline
-footage/final/springfield_pre-storm.mp4          Drone 1 clip
-footage/final/stills/repair_plans/               the five plan renders + their specs + sources
+footage/final/springfield_pre-storm_annotated.mp4  Drone 1 clip (annotations burned in)
+footage/final/stills/repair_plans/               the five post-storm renders + specs + sources
+footage/final/stills/maintenance_plans/          the two pre-storm renders + specs + sources
 scripts/precompute.py            re-run detections into a cache (after a model or clip change)
 scripts/repair_plan_still.py     render a repair-plan still from a spec
 scripts/calibrate_track.py       hand-place the flight track on satellite imagery (port 8010)

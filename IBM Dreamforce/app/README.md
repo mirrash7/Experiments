@@ -55,13 +55,31 @@ against the cached flight and prints what each combination would report.
 
 ## Curated scenes (what gets reported)
 
-**Post-storm reports entirely off the supplied renders.** `app/scenes/post-storm.json` lists the
-five scenes with their timestamps and `image` paths — `footage/final/stills/repair_plans/repair_plan_0*.png`,
+**Both flights report entirely off supplied renders.** `app/scenes/post-storm.json` lists the
+five post-storm scenes and `app/scenes/pre-storm.json` the two pre-storm ones, with their
+timestamps and `image` paths — `footage/final/stills/repair_plans/repair_plan_0*.png`,
 rendered by `scripts/repair_plan_still.py` from the matching `plan_0*.json` specs. When playback
 reaches a scene's `t` that report event fires and the supplied PNG is served byte-for-byte as its
 repair plan; rewinding never adds or removes events. The detector still drives the feed (masks,
 LINE DOWN labels, class filters) — it just does not decide the report. Rebuild the scene list after
 editing a spec, or drop the `scenes` key from the flight to go back to detector-driven incidents.
+
+## Pre-annotated clips
+
+A flight with `"annotated": true` plays its clip untouched: no cache replay, no API call, and
+nothing drawn over the video except the HUD line. Drone 1 uses it, because
+`footage/final/springfield_pre-storm_annotated.mp4` already carries the model's own masks,
+labels and counter panel in the pixels. The class filter bar hides itself for these flights
+(the clip carries its own legend); the report still comes from the curated scene list.
+
+The two pre-storm report events are maintenance, not storm damage: vegetation encroaching the
+span (4.1 s) and a pole out of plumb (10.7 s), both `P2`. Their renders live in
+`footage/final/stills/maintenance_plans/` — same renderer as the repair plans, titled
+"Maintenance plan":
+
+```bash
+./.venv/bin/python3 scripts/repair_plan_still.py footage/final/stills/maintenance_plans/plan_pre_01.json
+```
 
 ## Review / scrubbing
 

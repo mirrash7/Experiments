@@ -350,8 +350,12 @@ class Session:
         if cache_path and (ROOT / cache_path).exists() and mode == "drone":
             data = json.loads((ROOT / cache_path).read_text())
             self.cache = {int(k): v for k, v in data["frames"].items()}
+        # a clip whose detections are already burned into the pixels: play it as
+        # shot and draw nothing over the top, so the model's own render is what
+        # the room sees. The report still comes from the curated scene list.
+        self.annotated = bool(self.flight.get("annotated")) and mode == "drone"
         self.client = None
-        if self.cache is None:
+        if self.cache is None and not self.annotated:
             self.client = InferenceHTTPClient(
                 api_url=INFERENCE_URL,
                 api_key=load_api_key(self.flight.get("api_key_env", "ROBOFLOW_API_KEY")))
@@ -444,7 +448,8 @@ class Session:
                    "drone_id": self.tel.drone_id, "fps": self.fps,
                    "duration": self.duration, "model": self.model_id,
                    "flight": self.flight.get("id"), "flight_name": self.flight.get("name"),
-                   "cached": self.cache is not None})
+                   "cached": self.cache is not None or self.annotated,
+                   "annotated": self.annotated})
         t0 = time.time()
         last_tel = 0.0
         while self.running:
@@ -467,7 +472,8 @@ class Session:
                                                     "dw": disp.shape[1], "dh": disp.shape[0], "t": t,
                                                     "t_sub": time.time()}
                     self._drain()
-            elif self.cache is None and self.frame_idx % INFER_EVERY == 0 and self.in_flight < WORKERS and self.running:
+            elif (self.cache is None and not self.annotated and self.frame_idx % INFER_EVERY == 0
+                  and self.in_flight < WORKERS and self.running):
                 self.in_flight += 1
                 with self.lock:
                     self.in_flight_frames.add(self.frame_idx)
@@ -777,7 +783,7 @@ class Session:
                "best_score": 1e9, "best_t": round(t, 2), "best_range_m": round(rng), "best_shot_at": time.time(),
                "first_seen": time.strftime("%H:%M:%S"), "screenshot": str(path), "plan": plan,
                "findings": findings, "actions": list(dict.fromkeys(f["action"] for f in findings)),
-               "title": sc.get("title"), "severity": "P1", "status": "detected",
+               "title": sc.get("title"), "severity": sc.get("severity", "P1"), "status": "detected",
                "drone_id": self.tel.drone_id, "curated": True}
         self.incidents[iid] = inc
         self._persist()

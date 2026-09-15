@@ -1,0 +1,11 @@
+{
+ "src": "footage/final/stills/maintenance_plans/src_pre_01_4s.jpg",
+ "out": "footage/final/stills/maintenance_plans/maintenance_plan_01.png",
+ "title": "Maintenance plan",
+ "plan": "Vegetation crew   ·   Trim to clearance",
+ "items": [
+  [1, 1421, 430, 1856, 1047],
+  [2, 1296, 430, 1549, 934],
+  [3, 950, 430, 1214, 911]
+ ]
+}

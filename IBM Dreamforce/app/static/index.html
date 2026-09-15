@@ -258,6 +258,7 @@ function renderClassBar(classes) {
   const names = Object.keys(classes).sort((a, b) => (classes[b].alert - classes[a].alert) || a.localeCompare(b));
   hiddenClasses = new Set(names.filter(n => classes[n].hidden));
   const key = names.join('|'); const bar = $('#classbar');
+  bar.style.display = names.length ? 'flex' : 'none';   // a pre-annotated clip carries its own legend
   if (key !== classBarKey) {
     classBarKey = key;
     bar.innerHTML = '<span class="lbl">Classes</span>' + names.map(n => `
@@ -296,7 +297,7 @@ function onStatus(ev) {
     $('#stop').disabled = false;
     incidents.clear(); markers.forEach(m => m.remove()); markers.clear(); pendingMarkers.length = 0; $('#cards').innerHTML = '<div class="empty">Scanning…</div>';
     flownCoords = []; updateCounts();
-    classBarKey = ''; hiddenClasses = new Set(); $('#classbar').innerHTML = '<span class="lbl">Classes</span>';
+    classBarKey = ''; hiddenClasses = new Set(); $('#classbar').innerHTML = '<span class="lbl">Classes</span>'; $('#classbar').style.display = 'flex';
     if (mapReady) map.getSource('flown').setData(line([]));
   } else if (ev.state === 'ended') {
     $('#live').textContent = 'FLIGHT COMPLETE'; $('#live').className = 'chip neutral';

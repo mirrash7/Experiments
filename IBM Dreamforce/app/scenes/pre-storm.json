@@ -1,0 +1,56 @@
+{
+  "_note": "Curated report events for the pre-storm survey. The clip is already annotated (footage/final/springfield_pre-storm_annotated.mp4 carries the model's own masks and labels in the pixels), so the app plays it untouched and reports these two scenes when playback reaches each `t`. Renders come from footage/final/stills/maintenance_plans/ (plan_pre_0*.json -> scripts/repair_plan_still.py). Rewinding never adds or removes events.",
+  "scenes": [
+    {
+      "t": 4.1,
+      "id": "PM-001",
+      "severity": "P2",
+      "title": "Vegetation crew \u00b7 Trim to clearance",
+      "actions": [
+        "Vegetation crew",
+        "Trim to clearance"
+      ],
+      "findings": [
+        {
+          "n": 1,
+          "title": "Canopy growing into the span",
+          "action": "Vegetation crew"
+        },
+        {
+          "n": 2,
+          "title": "Branch contact with conductors",
+          "action": "Trim to clearance"
+        },
+        {
+          "n": 3,
+          "title": "Understory encroaching the pole",
+          "action": "Vegetation crew"
+        }
+      ],
+      "image": "footage/final/stills/maintenance_plans/maintenance_plan_01.png"
+    },
+    {
+      "t": 10.7,
+      "id": "PM-002",
+      "severity": "P2",
+      "title": "Pole realignment \u00b7 Re-tension span",
+      "actions": [
+        "Pole realignment",
+        "Re-tension span"
+      ],
+      "findings": [
+        {
+          "n": 1,
+          "title": "Pole out of plumb",
+          "action": "Pole realignment"
+        },
+        {
+          "n": 2,
+          "title": "Slack conductor on the adjacent span",
+          "action": "Re-tension span"
+        }
+      ],
+      "image": "footage/final/stills/maintenance_plans/maintenance_plan_02.png"
+    }
+  ]
+}
