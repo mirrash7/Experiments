@@ -30,16 +30,21 @@ for it). Everything else ships in this repo.
 # open http://localhost:8000 in a normal browser window (1080p+)
 ```
 
-Docker works too: `ROBOFLOW_API_KEY_JENNIFER=... docker compose up --build`.
+Docker works too: `SALES_DEMO_KEY=... docker compose up --build`.
 
 ## What happens in the demo
 
-1. Click a drone in the header. A short handshake, then the clip plays at native speed as if it
-   were the drone's RTMP feed, with the detections drawn on it. The map stays a spinning globe
-   until the drone reports its first position, then follows it down the road.
+1. Click a drone in the header. A short handshake, then the feed opens **held on its first
+   frame** — press **Play** (over the feed) to fly. It then runs at native speed as if it were
+   the drone's RTMP feed, with the detections drawn on it. **Restart** replays the flight from
+   the top; the map stays a spinning globe until the drone reports its first position, then
+   follows it down the road.
 2. **Report events** fire at fixed points in the clip, each using its pre-made render. Drone 2
    reports five downed poles (1.5 s, 20 s, 29 s, 34 s, 42 s); Drone 1 reports two maintenance
-   jobs — vegetation into the span (4.1 s) and a pole out of plumb (10.7 s). Open them with
+   jobs — vegetation into the span (4.1 s) and a pole out of plumb (10.7 s). The feed "takes a
+   photo" of each pole, which flies into its map popup. By default the pass then **holds** on
+   that pole so the room can look at it — Play carries on. Turn the holds off with the
+   **Auto-pause** switch, top right, to let a flight run straight through. Open the reports with
    **Repair plans** in the header; they overlay the map. Click a plan image to enlarge it.
 3. **Dispatch** on a card (or **Dispatch all**) creates a Salesforce work order. With no
    `SF_WEBHOOK_URL` set it goes to a built-in inbox (`GET /api/salesforce/inbox`) and mints
@@ -48,10 +53,9 @@ Docker works too: `ROBOFLOW_API_KEY_JENNIFER=... docker compose up --build`.
    card's timestamp, to re-render any frame with its detections. Rewinding never adds or
    removes report events.
 
-Neither flight calls the API. Drone 2's detections are **pre-computed** into `app/cache/*.json`
-and replayed; Drone 1's clip is **already annotated** (the model's masks, labels and counter panel
-are burned into `footage/final/springfield_pre-storm_annotated.mp4`), so the app plays it untouched
-and draws nothing over it. Playback is instant and identical every time. Map tiles come from
+Neither flight calls the API: both drones' detections are **pre-computed** into `app/cache/*.json`
+and replayed over the raw clips, so the app draws every mask and label itself and the class filter
+works on both passes. Playback is instant and identical every time. Map tiles come from
 OpenStreetMap and do need internet.
 
 ## Why it always reports exactly those scenes
@@ -83,7 +87,8 @@ app/flights.json         the two drones: clip + model + telemetry + detection se
 app/scenes/*.json        the curated report events (5 post-storm, 2 pre-storm)
 app/cache/*.json         pre-computed detections (one per flight)
 app/telemetry_springfield*.json   flight tracks along the road centreline
-footage/final/springfield_pre-storm_annotated.mp4  Drone 1 clip (annotations burned in)
+footage/final/springfield_pre-storm.mp4           Drone 1 clip (detections drawn from the cache)
+footage/final/springfield_pre-storm_annotated.mp4  same clip with annotations burned in (unused)
 footage/final/stills/repair_plans/               the five post-storm renders + specs + sources
 footage/final/stills/maintenance_plans/          the two pre-storm renders + specs + sources
 scripts/precompute.py            re-run detections into a cache (after a model or clip change)
@@ -95,12 +100,13 @@ scripts/tune_flight.py           sweep detection settings against a cache
 
 ## Models
 
-Both flights call models in the **jenniferworkspace** Roboflow workspace:
+Both flights call models in the **roboflow-sales-demos** Roboflow workspace, via a key in
+`SALES_DEMO_KEY`:
 
-- post-storm: `jenniferworkspace/fallen-poles-ibm-2-rfdetr-seg-small-t1`
+- post-storm: `roboflow-sales-demos/storm-damage-demo-4-rfdetr-seg-small-t1`
   (classes: `broken-wooden-pole`, `leaning-wooden-pole`, `wooden-pole`, `metal-pole`,
   `transformer`, `hit-transformer`, `tree`, `dense-vegetation`, `fallen-branch`, `street-sign`)
-- pre-storm: `jenniferworkspace/dreamforce-ibm-3-rfdetr-seg-medium-t2`
+- pre-storm: `roboflow-sales-demos/pre-storm-demo-3-rfdetr-seg-small-t1`
 
 Because detections are cached, the demo runs without hitting the API at all — verified by
 running it from a clean clone with no `.env` present. A key is only needed to re-run

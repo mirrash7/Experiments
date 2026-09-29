@@ -333,7 +333,9 @@ class Session:
         if sc and (ROOT / sc).exists():
             self.scenes = json.loads((ROOT / sc).read_text())["scenes"]
         show = self.flight.get("show_classes")
-        self.show_classes = set(show) if show else None    # default-visible classes (None -> all)
+        self.show_classes = set(show) if show else None    # default-visible allow-list (None -> all)
+        hide = self.flight.get("hide_classes")
+        self.hide_classes = set(hide) if hide else set()   # default-hidden deny-list (survives a model swap)
         self.hidden_classes = set()                        # toggled from the UI class filter bar
         self.classes_seen = {}                             # class -> total detections (for the filter bar)
         tel_path = self.flight.get("telemetry_path")
@@ -353,6 +355,13 @@ class Session:
         # a clip whose detections are already burned into the pixels: play it as
         # shot and draw nothing over the top, so the model's own render is what
         # the room sees. The report still comes from the curated scene list.
+        if self.cache is not None:
+            # every class the pass will ever show, listed from the first frame —
+            # otherwise a chip only appears the moment it is first detected
+            # (street-sign does not turn up until t=25s), so it cannot be toggled
+            for _dets in self.cache.values():
+                for _p in _dets:
+                    self.register_class(_p["class"])
         self.annotated = bool(self.flight.get("annotated")) and mode == "drone"
         self.client = None
         if self.cache is None and not self.annotated:
@@ -364,6 +373,19 @@ class Session:
         self.in_flight_frames = set()  # frame indices awaiting a result
         self.pending = {}              # finished results waiting for in-order apply
         self._seek = None              # review-mode scrub target (seconds)
+        # A canned flight opens held on its first frame, waiting for Play; an
+        # upload is something the user just handed over, so it runs immediately.
+        # Both holds wait on a UI that FAST mode does not have — headless_run.py
+        # and tune_flight.py drive a Session directly, so under FAST they would
+        # sit on frame 1 forever. FAST means "no pacing, no room": never hold.
+        self.paused = (mode == "drone") and not FAST
+        self.last_telemetry = None     # replayed to late subscribers so the map can initialise
+        # Hold the pass as each reported pole reaches the screen, so the room can
+        # look at it before the clip moves on. Play resumes.
+        self.pause_on_report = (bool(self.flight.get("pause_on_report", True))
+                                and mode == "drone" and not FAST)
+        self._pause_at = None          # display-frame index to hold on
+        self._pause_for = None         # which pole that hold belongs to
         self.last_gray = None          # gray of the last *applied* inferred frame
         self.tracker = Tracker()
 
@@ -398,12 +420,23 @@ class Session:
             return POLE_COLOR
         return PALETTE[sum(map(ord, cls)) % len(PALETTE)]
 
+    def register_class(self, cls):
+        """Put a class in the filter bar and decide whether it starts visible.
+
+        hide_classes names the ones to start off; show_classes (if given) starts
+        everything else off. An alert class is never hidden by default. Either way
+        the chip stays in the bar, so the room can toggle it back on.
+        """
+        if cls in self.classes_seen:
+            return
+        self.classes_seen[cls] = 0
+        if not self.is_alert(cls) and (
+                cls in self.hide_classes
+                or (self.show_classes is not None and cls not in self.show_classes)):
+            self.hidden_classes.add(cls)
+
     def note_class(self, cls):
-        """First sighting of a class: default it hidden unless the flight lists it."""
-        if cls not in self.classes_seen:
-            self.classes_seen[cls] = 0
-            if self.show_classes is not None and cls not in self.show_classes and not self.is_alert(cls):
-                self.hidden_classes.add(cls)
+        self.register_class(cls)
         self.classes_seen[cls] += 1
 
     def visible(self, cls):
@@ -438,6 +471,17 @@ class Session:
         """Scrub to `t` seconds (review mode, after the pass has finished)."""
         self._seek = max(0.0, min(float(t), self.duration or 0))
 
+    def set_paused(self, on, incident=None):
+        """Hold the pass on its current frame. The MJPEG stream only pushes when
+        the frame changes, so a paused feed simply sits on the last one.
+
+        `incident` names the pole this hold is for, so the UI can open that
+        marker's popup; a manual pause carries None.
+        """
+        self.paused = bool(on)
+        self.emit({"type": "paused", "paused": self.paused, "incident": incident})
+        return self.paused
+
     def _loop(self):
         cap = cv2.VideoCapture(self.video_path)
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -449,10 +493,26 @@ class Session:
                    "duration": self.duration, "model": self.model_id,
                    "flight": self.flight.get("id"), "flight_name": self.flight.get("name"),
                    "cached": self.cache is not None or self.annotated,
-                   "annotated": self.annotated})
+                   "annotated": self.annotated, "paused": self.paused,
+                   "auto_pause": self.pause_on_report})
         t0 = time.time()
-        last_tel = 0.0
+        # negative so the very first displayed frame clears the >= 0.5s gate:
+        # the map needs a fix to initialise, even when we open held on frame 1
+        last_tel = -1.0
         while self.running:
+            if self.paused and self.latest_jpeg is not None:
+                # Held only once there is a frame on screen to hold — the display
+                # buffer means the first frames are still in flight at startup,
+                # and pausing before then would show an empty panel.
+                # Playback is paced against t0, so the time spent held has to be
+                # added back — otherwise every paused second reads as "behind"
+                # and the clip sprints to catch up the moment it resumes.
+                held = time.time()
+                while self.paused and self.running:
+                    time.sleep(0.05)
+                t0 += time.time() - held
+                if not self.running:
+                    break
             ok, frame = cap.read()
             if not ok:
                 break
@@ -496,6 +556,13 @@ class Session:
             shown_t = t
             if len(self.buffer) > delay_frames:
                 s_idx, shown_t, s_disp, s_gray = self.buffer.pop(0)
+                if self._pause_at is not None and s_idx >= self._pause_at:
+                    self._pause_at, hold_for = None, self._pause_for
+                    self._pause_for = None
+                    self.emit({"type": "report_shot", "incident": hold_for,
+                               "hold": self.pause_on_report})
+                    if self.pause_on_report:
+                        self.set_paused(True, hold_for)
                 preds, shift = self._preds_for(s_idx, s_gray)
                 out = self._render(s_disp, shown_t, preds, shift)
                 ok2, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -506,7 +573,7 @@ class Session:
             if shown_t - last_tel >= 0.5:
                 t = shown_t  # keep map + HUD in sync with what is on screen
                 lat, lon, hd = self.tel.position(t)
-                self.emit({"type": "telemetry", "t": round(t, 2), "lat": lat, "lon": lon,
+                self.last_telemetry = {"type": "telemetry", "t": round(t, 2), "lat": lat, "lon": lon,
                            "heading": hd, "alt_m": round(self.tel.altitude(t)),
                            "speed_mps": round(self.tel.speed_mps, 1),
                            "stats": dict(self.stats), "latency": round(self.latency, 2),
@@ -515,7 +582,8 @@ class Session:
                                            "total": n, "alert": self.is_alert(c),
                                            "hidden": c in self.hidden_classes,
                                            "color": "#%02x%02x%02x" % self.color(c)[::-1]}
-                                       for c, n in self.classes_seen.items()}})
+                                       for c, n in self.classes_seen.items()}}
+                self.emit(self.last_telemetry)
                 last_tel = t
 
             # pace to native fps
@@ -719,6 +787,11 @@ class Session:
         self.incidents[iid] = inc
         self._persist()
         self.emit({"type": "incident", **self.public_incident(inc)})
+        # Arm against the CURRENT capture frame; the gate below fires when that
+        # frame is the one actually being displayed, not when it was ingested.
+        # Always armed: the shutter fires either way, only the hold is optional.
+        self._pause_at = self.frame_idx
+        self._pause_for = inc["id"]
 
     def _persist(self):
         """Write the run's incidents to disk so the UI can restore them later."""
@@ -788,6 +861,11 @@ class Session:
         self.incidents[iid] = inc
         self._persist()
         self.emit({"type": "incident", **self.public_incident(inc)})
+        # Arm against the CURRENT capture frame; the gate below fires when that
+        # frame is the one actually being displayed, not when it was ingested.
+        # Always armed: the shutter fires either way, only the hold is optional.
+        self._pause_at = self.frame_idx
+        self._pause_for = inc["id"]
 
     def _plan(self, iid, findings, frame, dw):
         """Branded repair-plan image for this pole (numbered findings + actions)."""

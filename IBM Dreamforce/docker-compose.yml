@@ -4,6 +4,7 @@ services:
     ports: ["8000:8000"]
     environment:
       ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY}
+      SALES_DEMO_KEY: ${SALES_DEMO_KEY}
       MODEL_ID: ${MODEL_ID:-alexei-alexandrovich/broken-powerlines-4-rfdetr-seg-small-t1}
       # hosted by default; point at the local inference container for offline stage use
       INFERENCE_URL: ${INFERENCE_URL:-https://serverless.roboflow.com}

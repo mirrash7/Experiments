@@ -31,6 +31,18 @@
   .chip.live::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--red);animation:pulse 1.2s infinite}
   @keyframes pulse{50%{opacity:.25}}
   .spacer{flex:1}
+  /* auto-pause switch, top right */
+  #ap-wrap{display:flex;align-items:center;gap:8px;padding:4px 10px 4px 8px;border:1px solid var(--line);
+           border-radius:999px;background:#F1F1F6;cursor:pointer;user-select:none;white-space:nowrap}
+  #ap-wrap .lbl{font-size:12px;font-weight:600;color:var(--muted)}
+  #ap-wrap.on .lbl{color:var(--purple)}
+  #ap-wrap input{position:absolute;opacity:0;width:0;height:0}
+  #ap-wrap .track{width:32px;height:18px;border-radius:999px;background:#C9C9DE;position:relative;
+                  transition:background .18s;flex:0 0 auto}
+  #ap-wrap.on .track{background:var(--purple)}
+  #ap-wrap .knob{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
+                 background:#fff;transition:transform .18s;box-shadow:0 1px 2px rgba(20,20,43,.3)}
+  #ap-wrap.on .knob{transform:translateX(14px)}
   /* flight selector — top of screen */
   .tabs{display:flex;gap:6px;background:#F1F1F6;border:1px solid var(--line);border-radius:10px;padding:4px}
   .tab{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 14px;border-radius:7px;cursor:pointer;border:1px solid transparent;background:transparent;font-family:inherit;text-align:left}
@@ -56,7 +68,16 @@
   body.plans-open #plans{display:flex}
   #video{position:relative;background:#0F0F1A;padding:0;border-color:#0F0F1A;display:flex;flex-direction:column}
   #video img{width:100%;flex:1;min-height:0;object-fit:contain;display:block}
-  #video .hud{position:absolute;top:10px;left:10px;display:flex;gap:8px}
+  #video .hud{position:absolute;top:10px;left:10px;display:flex;gap:8px;align-items:center}
+  #playpause,#restart{display:none;align-items:center;gap:7px;padding:4px 12px 4px 9px;border-radius:999px;
+             background:rgba(16,6,51,.72);color:#fff;border:1px solid rgba(237,230,251,.3);
+             font-size:12px;font-weight:600;cursor:pointer;backdrop-filter:blur(3px)}
+  #playpause:hover,#restart:hover{background:var(--purple);border-color:var(--purple)}
+  #playpause.ready{background:var(--purple);border-color:var(--purple);
+                   box-shadow:0 0 0 6px rgba(103,6,206,.22)}
+  body.playing #playpause,body.playing #restart{display:inline-flex}
+  #restart .glyph{font-size:13px;line-height:1}
+  #playpause .glyph{font-size:11px;line-height:1;letter-spacing:1px}
   #video .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9A9AB5}
   #scrub{display:none;align-items:center;gap:10px;padding:7px 12px;background:#12121f;border-top:1px solid #23233a;color:#C9C9DE;font-size:12px}
   body.seekable #scrub{display:flex}
@@ -96,13 +117,25 @@
   .actions .act{color:var(--muted)}
   .card .meta{margin-top:6px;flex:0 0 auto;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
   .st-dispatched{color:var(--green);font-weight:600;background:var(--green-tint);padding:2px 8px;border-radius:6px;font-family:Inter,sans-serif}
+  /* shutter: the feed "takes a photo", which then flies into the popup */
+  .shutter{position:absolute;inset:0;background:#fff;pointer-events:none;z-index:8;
+           animation:shutter .40s ease-out forwards}
+  @keyframes shutter{0%{opacity:0}10%{opacity:.9}100%{opacity:0}}
+  .flier{position:fixed;z-index:80;transform-origin:top left;pointer-events:none;
+         border:2px solid #fff;box-shadow:0 18px 50px rgba(16,6,51,.45);object-fit:cover}
+  .maplibregl-popup{transition:opacity .22s ease-out}
+  body.popup-landing .maplibregl-popup{opacity:0}
   /* hover zoom */
   #zoom{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(16,6,51,.72);z-index:60;cursor:zoom-out}
-  #zoom img{max-width:88vw;max-height:88vh;border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.5)}
+  #zoom img{max-width:96vw;max-height:96vh;border-radius:10px;box-shadow:0 24px 70px rgba(0,0,0,.5)}
+  #zoom .close-hint{position:fixed;top:16px;right:20px;color:#EDE6FB;font-size:11.5px;font-weight:600;
+                    letter-spacing:.06em;text-transform:uppercase;background:rgba(16,6,51,.55);
+                    border:1px solid rgba(237,230,251,.25);border-radius:999px;padding:5px 12px}
   .marker{width:16px;height:16px;border-radius:50%;background:var(--red);border:2px solid #fff;box-shadow:0 0 0 6px rgba(229,36,59,.25)}
   .drone-marker{width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:22px solid var(--purple);filter:drop-shadow(0 1px 3px rgba(0,0,0,.4))}
   .maplibregl-popup-content{background:var(--card);color:var(--text);border-radius:10px;padding:10px;border:1px solid var(--line);font-family:inherit}
-  .maplibregl-popup-content img{width:260px;border-radius:6px;display:block;margin-top:6px}
+  .maplibregl-popup-content img{width:260px;border-radius:6px;display:block;margin-top:6px;cursor:zoom-in}
+  .maplibregl-popup-content img:hover{outline:2px solid var(--purple);outline-offset:1px}
   .toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--purple-line);border-left:4px solid var(--purple);color:var(--text);padding:12px 16px;border-radius:10px;box-shadow:0 10px 30px rgba(20,20,43,.15);opacity:0;transition:.3s;font-weight:500;z-index:70}
   .toast.show{opacity:1}
 </style>
@@ -120,13 +153,22 @@
   <span class="spacer"></span>
   <span id="live" class="chip neutral">OFFLINE</span>
   <span class="chip neutral" id="clock">T+0.0s</span>
+  <label id="ap-wrap" class="on" title="Hold the pass at each reported pole. Off: the shot is still taken, the clip plays on.">
+    <input type="checkbox" id="autopause" checked>
+    <span class="track"><span class="knob"></span></span>
+    <span class="lbl">Auto-pause</span>
+  </label>
 </header>
 
 <section id="main">
   <div class="panel" id="video">
     <div class="placeholder" id="ph">Select a drone above to begin</div>
     <img id="feed" alt="" hidden>
-    <div class="hud"><span class="chip" id="det-badge">0 active detections</span></div>
+    <div class="hud">
+      <button id="playpause" title="Space"><span class="glyph">❚❚</span><span id="pp-label">Pause</span></button>
+      <button id="restart" title="Replay this flight from the start"><span class="glyph">↺</span><span>Restart</span></button>
+      <span class="chip" id="det-badge">0 active detections</span>
+    </div>
     <div id="scrub">
       <span class="tick" id="scrub-now">0:00</span>
       <input type="range" id="scrub-range" min="0" max="100" step="0.1" value="0">
@@ -152,7 +194,7 @@
 
 
 <div class="toast" id="toast"></div>
-<div id="zoom"><img id="zoom-img" alt=""></div>
+<div id="zoom"><img id="zoom-img" alt=""><span class="close-hint">Click anywhere or press Esc to close</span></div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -244,7 +286,9 @@ function addIncidentMarker(inc) {
   const popup = new maplibregl.Popup({ offset: 14, closeButton: false }).setHTML(
     `<b>${inc.id}</b> · <span class="pri ${inc.severity}">${inc.severity}</span> · ${(inc.confidence * 100).toFixed(0)}%<br>
      <span style="color:#6E6E8A">${inc.lat.toFixed(5)}, ${inc.lon.toFixed(5)}</span>
-     <img src="/api/incidents/${inc.id}/plan?v=${inc.best_t || inc.t}" onerror="this.src='/api/incidents/${inc.id}/screenshot?v='+(inc.best_t||inc.t)">`);
+     <img src="/api/incidents/${inc.id}/plan?v=${inc.best_t || inc.t}" title="Click to enlarge"
+          onclick="zoomSrc(this.src)"
+          onerror="this.src='/api/incidents/${inc.id}/screenshot?v='+(inc.best_t||inc.t)">`);
   markers.set(inc.id, new maplibregl.Marker({ element: el }).setLngLat([inc.lon, inc.lat]).setPopup(popup).addTo(map));
 }
 function followDrone(lngLat) {
@@ -292,26 +336,38 @@ function connectEvents() {
     else if (ev.type === 'incident') onIncident(ev);
     else if (ev.type === 'incident_update') onIncidentUpdate(ev);
     else if (ev.type === 'dispatched') onDispatched(ev);
+    else if (ev.type === 'report_shot') {
+      shutterToPopup(ev.incident);
+      // playing straight through: let the popup breathe, then clear it
+      if (!ev.hold) setTimeout(closeIncidentPopups, 4000);
+    }
+    else if (ev.type === 'paused') {
+      setPaused(ev.paused);
+      if (!ev.paused) closeIncidentPopups();
+    }
   };
 }
 function onStatus(ev) {
   if (ev.state === 'connected') {
     document.body.classList.remove('seekable');
-    $('#live').textContent = ev.mode === 'drone' ? 'LIVE · ' + ev.drone_id : 'PROCESSING UPLOAD';
-    $('#live').className = 'chip live';
+    liveLabel = ev.mode === 'drone' ? 'LIVE \u00b7 ' + ev.drone_id : 'PROCESSING UPLOAD';
     if (ev.flight) { selectedFlight = flights.find(f => f.id === ev.flight) || selectedFlight; renderTabs(); }
     setPlansLabel(selectedFlight && selectedFlight.plans_label);
-    $('#feed').src = '/stream.mjpg?' + Date.now(); $('#feed').hidden = false; $('#ph').style.display = 'none';
+    showFeed(ev.drone_id);
     $('#stop').disabled = false;
+    document.body.classList.add('playing');
+    // only trust a status that actually reports it — a replayed status without
+    // the field must not silently flip the button to "Pause" on a held clip
+    if (ev.paused !== undefined) setPaused(!!ev.paused);
+    if (ev.auto_pause !== undefined) setAutoPause(ev.auto_pause);
     incidents.clear(); markers.forEach(m => m.remove()); markers.clear(); pendingMarkers.length = 0; $('#cards').innerHTML = '<div class="empty">Scanning…</div>';
     flownCoords = []; updateCounts();
     classBarKey = ''; hiddenClasses = new Set(); $('#classbar').innerHTML = '<span class="lbl">Classes</span>'; $('#classbar').style.display = 'flex';
     if (mapReady) map.getSource('flown').setData(line([]));
   } else if (ev.state === 'ended') {
+    document.body.classList.remove('playing');
     $('#live').textContent = 'FLIGHT COMPLETE'; $('#live').className = 'chip neutral';
-    if (ev.seekable) {   // rejoining a finished pass: show its last rendered frame
-      $('#feed').src = '/stream.mjpg?' + Date.now(); $('#feed').hidden = false; $('#ph').style.display = 'none';
-    }
+    if (ev.seekable) showFeed(ev.drone_id);   // rejoining a finished pass
     $('#stop').disabled = true;
     if (ev.seekable && ev.duration) {
       document.body.classList.add('seekable');
@@ -405,9 +461,148 @@ function togglePlans(open) {
 $('#toggle-plans').onclick = () => togglePlans();
 $('#close-plans').onclick = () => togglePlans(false);
 
+// ---------- feed ----------
+function showFeed(label) {
+  const old = $('#feed');
+  const img = document.createElement('img');   // new element = nothing stale to paint
+  img.id = 'feed'; img.alt = ''; img.hidden = false; img.dataset.mode = 'still';
+  old.replaceWith(img);
+  const ph = $('#ph');
+  ph.textContent = label ? `Connecting to ${label}\u2026` : 'Connecting\u2026';
+  ph.style.display = 'flex';
+  img.addEventListener('load', () => { ph.style.display = 'none'; }, { once: true });
+
+  // Poll for the opening frame as a plain JPEG. The stream sends a single part
+  // while held and browsers disagree about painting that; a still never fails.
+  let tries = 0;
+  (function pollStill() {
+    if (img !== $('#feed')) return;            // a newer connect superseded us
+    const probe = new Image();
+    probe.onload = () => { if (img === $('#feed') && img.dataset.mode === 'still') img.src = probe.src; };
+    probe.onerror = () => { if (++tries < 60 && img === $('#feed')) setTimeout(pollStill, 150); };
+    probe.src = '/api/frame.jpg?t=' + Date.now();
+  })();
+}
+function startStream() {
+  const img = $('#feed');
+  if (!img || img.dataset.mode === 'stream') return;   // already live
+  img.dataset.mode = 'stream';
+  img.hidden = false; $('#ph').style.display = 'none';
+  img.src = '/stream.mjpg?' + Date.now();
+}
+
+// ---------- play / pause ----------
+let paused = false, liveLabel = 'LIVE';
+function setPaused(on) {
+  paused = on;
+  $('#playpause').querySelector('.glyph').textContent = on ? '\u25B6' : '\u275A\u275A';
+  $('#pp-label').textContent = on ? 'Play' : 'Pause';
+  $('#playpause').classList.toggle('ready', on);
+  $('#live').textContent = on ? 'READY' : liveLabel;
+  $('#live').className = on ? 'chip neutral' : 'chip live';
+  if (!on) startStream();        // Play: hand over from the still to the live feed
+}
+function snapshotFeed() {
+  // the feed is a same-origin MJPEG <img>, so a canvas copy is untainted
+  const feed = $('#feed');
+  if (!feed || feed.hidden || !feed.naturalWidth) return null;
+  try {
+    const c = document.createElement('canvas');
+    c.width = feed.naturalWidth; c.height = feed.naturalHeight;
+    c.getContext('2d').drawImage(feed, 0, 0);
+    return c.toDataURL('image/jpeg', 0.85);
+  } catch (e) { return null; }
+}
+function shutterToPopup(id, tries = 0) {
+  if (!markers.get(id)) {                       // marker still queued on map init
+    if (tries < 10) setTimeout(() => shutterToPopup(id, tries + 1), 400);
+    return;
+  }
+  const feed = $('#feed');
+  const shot = snapshotFeed();
+
+  const flash = document.createElement('div');  // the shutter itself
+  flash.className = 'shutter';
+  $('#video').appendChild(flash);
+  flash.addEventListener('animationend', () => flash.remove());
+
+  document.body.classList.add('popup-landing'); // open it, but hold it invisible
+  openIncidentPopup(id);
+  const land = () => document.body.classList.remove('popup-landing');
+
+  // two frames: one for maplibre to place the popup, one to measure it settled
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const content = document.querySelector('.maplibregl-popup-content');
+    const from = feed.getBoundingClientRect();
+    const to = content && content.getBoundingClientRect();
+    if (!shot || !to || !to.width || !from.width) { land(); return; }
+
+    const flier = document.createElement('img');
+    flier.className = 'flier'; flier.src = shot;
+    flier.style.cssText = `left:${from.left}px;top:${from.top}px;width:${from.width}px;height:${from.height}px`;
+    document.body.appendChild(flier);
+
+    const a = flier.animate([
+      { transform: 'translate(0,0) scale(1,1)', opacity: 1, borderRadius: '2px' },
+      { transform: `translate(${to.left - from.left}px,${to.top - from.top}px) ` +
+                   `scale(${to.width / from.width},${to.height / from.height})`,
+        opacity: 0.9, borderRadius: '14px' }
+    ], { duration: 640, easing: 'cubic-bezier(.36,.9,.32,1)', fill: 'forwards' });
+    a.onfinish = a.oncancel = () => { flier.remove(); land(); };
+    setTimeout(() => { if (document.body.contains(flier)) { flier.remove(); land(); } }, 1200);
+  }));
+}
+function closeIncidentPopups() {
+  markers.forEach(m => { const p = m.getPopup(); if (p && p.isOpen()) m.togglePopup(); });
+}
+function openIncidentPopup(id, tries = 0) {
+  const m = markers.get(id);
+  if (!m) {
+    // the marker is queued until the map finishes initialising — wait for it
+    if (tries < 10) setTimeout(() => openIncidentPopup(id, tries + 1), 400);
+    return;
+  }
+  closeIncidentPopups();
+  const p = m.getPopup();
+  if (p && !p.isOpen()) m.togglePopup();
+}
+async function togglePause() {
+  try {
+    const r = await fetch('/api/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (r.ok) setPaused((await r.json()).paused);
+  } catch (e) { /* no session — button is hidden anyway */ }
+}
+$('#playpause').onclick = togglePause;
+$('#restart').onclick = async () => {
+  // a fresh session reopens held on frame 1; its 'connected' status resets the UI
+  try { await fetch('/api/restart', { method: 'POST' }); }
+  catch (e) { toast('\u26a0\ufe0f restart failed'); }
+};
+
+function setAutoPause(on) {
+  $('#autopause').checked = !!on;
+  $('#ap-wrap').classList.toggle('on', !!on);
+}
+$('#autopause').onchange = async e => {
+  const on = e.target.checked;
+  setAutoPause(on);
+  try {
+    const r = await fetch('/api/autopause', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }) });
+    if (r.ok) setAutoPause((await r.json()).auto_pause);
+  } catch (_) { /* no session yet — the server keeps the preference anyway */ }
+};
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && document.body.classList.contains('playing') &&
+      !/^(INPUT|TEXTAREA|BUTTON)$/.test((e.target || {}).tagName || '')) {
+    e.preventDefault(); togglePause();
+  }
+});
+
 // ---------- hover zoom ----------
-function zoomIn(id) {
-  const src = ($('#plan-' + id) || {}).src; if (!src) return;
+function zoomIn(id) { zoomSrc(($('#plan-' + id) || {}).src); }
+function zoomSrc(src) {
+  if (!src) return;
   $('#zoom-img').src = src; $('#zoom').style.display = 'flex';
 }
 function zoomOut() { $('#zoom').style.display = 'none'; }

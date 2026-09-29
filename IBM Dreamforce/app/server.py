@@ -2,6 +2,7 @@
 
   uvicorn app.server:app --port 8000
 """
+import asyncio
 import json
 import os
 import shutil
@@ -11,12 +12,13 @@ from typing import Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.pipeline import MODEL_ID, ROOT, RUNS, Session, Telemetry, load_flights
 
 SF_WEBHOOK_URL = os.environ.get("SF_WEBHOOK_URL", "")  # empty -> local inbox
+AUTO_PAUSE = True   # UI toggle: hold the pass at each reported pole. Survives flight switches.
 
 
 def flight_by_id(flight_id: Optional[str]):
@@ -95,6 +97,7 @@ def start_session(video_path, mode, flight):
         session = Session(video_path, mode=mode, flight=flight)
     except RuntimeError as e:  # e.g. missing API key for this flight's workspace
         raise HTTPException(400, str(e))
+    session.pause_on_report = AUTO_PAUSE and mode == "drone"   # carry the toggle over
     session.start()
     global ARCHIVE
     ARCHIVE = None      # the live session is now the source of truth
@@ -140,6 +143,37 @@ def seek(body: dict):
     return {"t": body.get("t"), "duration": s.duration}
 
 
+@app.post("/api/autopause")
+def autopause(body: Optional[dict] = None):
+    """Hold at each reported pole, or play straight through. Body {"on": bool}; omit to toggle."""
+    global AUTO_PAUSE
+    want = (body or {}).get("on")
+    AUTO_PAUSE = (not AUTO_PAUSE) if want is None else bool(want)
+    if session is not None:
+        session.pause_on_report = AUTO_PAUSE and session.mode == "drone"
+    return {"auto_pause": AUTO_PAUSE}
+
+
+@app.post("/api/restart")
+def restart():
+    """Replay the current flight from the top, held on its opening frame."""
+    s = current()
+    fid = (s.flight or {}).get("id")
+    if not fid:
+        raise HTTPException(400, "no flight to restart")
+    f = flight_by_id(fid)
+    ns = start_session(f["video_path"], "drone", f)
+    return {"session": ns.id, "flight": fid, "model": ns.model_id}
+
+
+@app.post("/api/pause")
+def pause(body: Optional[dict] = None):
+    """Hold or resume the pass. Body {"paused": bool}; omit it to toggle."""
+    s = current()
+    want = (body or {}).get("paused")
+    return {"paused": s.set_paused((not s.paused) if want is None else bool(want))}
+
+
 @app.post("/api/stop")
 def stop():
     global ARCHIVE
@@ -161,24 +195,49 @@ def state():
     return {"state": "running" if (session.running and not session.finished) else
                      ("review" if session.running else "ended"),
             "session": session.id, "mode": session.mode, "stats": session.stats,
+            "paused": session.paused, "auto_pause": session.pause_on_report,
             "duration": session.duration, "seekable": session.finished and session.running,
             "incidents": [Session.public_incident(i) for i in session.incidents.values()]}
 
 
+@app.get("/api/frame.jpg")
+def frame():
+    """The current frame as an ordinary JPEG.
+
+    A held clip sends one multipart part and then goes quiet, and browsers vary
+    on whether they paint that. A plain image always paints, so the opening
+    frame is served this way and the stream only takes over on Play.
+    """
+    s = session
+    if s is None or s.latest_jpeg is None:
+        raise HTTPException(404, "no frame yet")
+    return Response(content=s.latest_jpeg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.get("/stream.mjpg")
-def stream():
-    def gen():
-        boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+async def stream(request: Request):
+    # Async on purpose. As a sync generator this ran in Starlette's threadpool
+    # (40 slots) and only yielded when the frame changed, so once a pass ended
+    # it spun on sleep() forever with no yield for GeneratorExit to land on —
+    # one stuck thread per tab, until new streams could not be served at all.
+    async def gen():
         last = None
         while True:
+            if await request.is_disconnected():
+                return
             s = session
             if s is None or s.latest_jpeg is None:
-                time.sleep(0.1)
+                await asyncio.sleep(0.1)
                 continue
             if s.latest_jpeg is not last:
                 last = s.latest_jpeg
-                yield boundary + last + b"\r\n"
-            time.sleep(1 / 30)
+                # Content-Length matters: without it a browser only learns a part
+                # has ended when the NEXT boundary arrives. Held on the opening
+                # frame nothing further is sent, so the picture would never appear.
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                       + str(len(last)).encode() + b"\r\n\r\n" + last + b"\r\n")
+            await asyncio.sleep(1 / 30)
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
@@ -204,7 +263,12 @@ async def events(request: Request):
                             "flight": s.flight.get("id"), "flight_name": s.flight.get("name"),
                             "cached": s.cache is not None,
                             "seekable": s.finished and s.running,
+                            "paused": s.paused, "auto_pause": s.pause_on_report,
                             "incidents": len(s.incidents)}) + "\n\n"
+                    # the opening fix is emitted before any subscriber attaches,
+                    # so replay it or the map never leaves the globe
+                    if s.last_telemetry:
+                        yield f"data: {json.dumps(s.last_telemetry)}\n\n"
                     # replay existing incidents for late joiners
                     for inc in s.incidents.values():
                         yield f"data: {json.dumps({'type': 'incident', **Session.public_incident(inc)})}\n\n"

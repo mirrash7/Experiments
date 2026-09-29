@@ -1,16 +1,16 @@
 {
-  "_note": "Each flight = one clip + the model that runs on it (+ telemetry). api_key_env names an .env variable holding the API key for that model's workspace; omitted = ROBOFLOW_API_KEY. alert_classes = class names that count as 'line down' (default: any class containing 'broken'). show_classes = classes visible by default (all are still tracked; toggle in the UI). cache = pre-computed detections (scripts/precompute.py) so the demo plays instantly with no live inference dependency. annotated = the clip already has the model's render burned in, so play it untouched and draw nothing over it.",
+  "_note": "Each flight = one clip + the model that runs on it (+ telemetry). api_key_env names an .env variable holding the API key for that model's workspace; omitted = ROBOFLOW_API_KEY. alert_classes = class names that count as 'line down' (default: any class containing 'broken'). show_classes = classes visible by default (all are still tracked; toggle in the UI). hide_classes = classes that start toggled off (alert_classes are never hidden). cache = pre-computed detections (scripts/precompute.py) so the demo plays instantly with no live inference dependency. annotated = the clip already has the model's render burned in, so play it untouched and draw nothing over it.",
   "flights": [
     {
       "id": "pre-storm",
       "drone_id": "Drone 1",
       "name": "Pre-storm survey",
       "description": "Springfield, MO \u00b7 baseline inspection flight",
-      "video": "footage/final/springfield_pre-storm_annotated.mp4",
-      "model_id": "jenniferworkspace/dreamforce-ibm-3-rfdetr-seg-medium-t2",
-      "api_key_env": "ROBOFLOW_API_KEY_JENNIFER",
+      "video": "footage/final/springfield_pre-storm.mp4",
+      "model_id": "roboflow-sales-demos/pre-storm-demo-3-rfdetr-seg-small-t1",
+      "api_key_env": "SALES_DEMO_KEY",
       "telemetry": "app/telemetry_springfield_pre.json",
-      "annotated": true,
+      "cache": "app/cache/pre-storm.json",
       "scenes": "app/scenes/pre-storm.json",
       "plans_label": "Maintenance plans"
     },
@@ -20,11 +20,17 @@
       "name": "Post-storm damage assessment",
       "description": "Springfield, MO \u00b7 same street after the storm",
       "video": "Outputs/REFERENCE-ONLY_instagram-reel_45s_2k_equalized.mp4",
-      "model_id": "jenniferworkspace/fallen-poles-ibm-2-rfdetr-seg-small-t1",
-      "api_key_env": "ROBOFLOW_API_KEY_JENNIFER",
+      "model_id": "roboflow-sales-demos/storm-damage-demo-4-rfdetr-seg-small-t1",
+      "api_key_env": "SALES_DEMO_KEY",
       "telemetry": "app/telemetry_springfield.json",
       "alert_classes": [
         "broken-wooden-pole"
+      ],
+      "hide_classes": [
+        "tree",
+        "dense-vegetation",
+        "fallen-branch",
+        "street-sign"
       ],
       "cache": "app/cache/post-storm.json",
       "detection": {
