@@ -3,3 +3,9 @@
 __pycache__/
 app/runs/
 footage/calib/
+footage/headless/
+
+# Outputs/ is a local drop folder for reference footage we do not redistribute
+# (and the reel is 102 MB, over GitHub's 100 MB file limit). Only the README ships.
+Outputs/*
+!Outputs/README.md
