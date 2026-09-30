@@ -31,18 +31,6 @@
   .chip.live::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--red);animation:pulse 1.2s infinite}
   @keyframes pulse{50%{opacity:.25}}
   .spacer{flex:1}
-  /* auto-pause switch, top right */
-  #ap-wrap{display:flex;align-items:center;gap:8px;padding:4px 10px 4px 8px;border:1px solid var(--line);
-           border-radius:999px;background:#F1F1F6;cursor:pointer;user-select:none;white-space:nowrap}
-  #ap-wrap .lbl{font-size:12px;font-weight:600;color:var(--muted)}
-  #ap-wrap.on .lbl{color:var(--purple)}
-  #ap-wrap input{position:absolute;opacity:0;width:0;height:0}
-  #ap-wrap .track{width:32px;height:18px;border-radius:999px;background:#C9C9DE;position:relative;
-                  transition:background .18s;flex:0 0 auto}
-  #ap-wrap.on .track{background:var(--purple)}
-  #ap-wrap .knob{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
-                 background:#fff;transition:transform .18s;box-shadow:0 1px 2px rgba(20,20,43,.3)}
-  #ap-wrap.on .knob{transform:translateX(14px)}
   /* flight selector — top of screen */
   .tabs{display:flex;gap:6px;background:#F1F1F6;border:1px solid var(--line);border-radius:10px;padding:4px}
   .tab{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 14px;border-radius:7px;cursor:pointer;border:1px solid transparent;background:transparent;font-family:inherit;text-align:left}
@@ -153,11 +141,6 @@
   <span class="spacer"></span>
   <span id="live" class="chip neutral">OFFLINE</span>
   <span class="chip neutral" id="clock">T+0.0s</span>
-  <label id="ap-wrap" class="on" title="Hold the pass at each reported pole. Off: the shot is still taken, the clip plays on.">
-    <input type="checkbox" id="autopause" checked>
-    <span class="track"><span class="knob"></span></span>
-    <span class="lbl">Auto-pause</span>
-  </label>
 </header>
 
 <section id="main">
@@ -337,9 +320,9 @@ function connectEvents() {
     else if (ev.type === 'incident_update') onIncidentUpdate(ev);
     else if (ev.type === 'dispatched') onDispatched(ev);
     else if (ev.type === 'report_shot') {
+      // the clip keeps playing: show the snapshot in its popup, then clear it
       shutterToPopup(ev.incident);
-      // playing straight through: let the popup breathe, then clear it
-      if (!ev.hold) setTimeout(closeIncidentPopups, 4000);
+      setTimeout(closeIncidentPopups, 4000);
     }
     else if (ev.type === 'paused') {
       setPaused(ev.paused);
@@ -359,7 +342,6 @@ function onStatus(ev) {
     // only trust a status that actually reports it — a replayed status without
     // the field must not silently flip the button to "Pause" on a held clip
     if (ev.paused !== undefined) setPaused(!!ev.paused);
-    if (ev.auto_pause !== undefined) setAutoPause(ev.auto_pause);
     incidents.clear(); markers.forEach(m => m.remove()); markers.clear(); pendingMarkers.length = 0; $('#cards').innerHTML = '<div class="empty">Scanning…</div>';
     flownCoords = []; updateCounts();
     classBarKey = ''; hiddenClasses = new Set(); $('#classbar').innerHTML = '<span class="lbl">Classes</span>'; $('#classbar').style.display = 'flex';
@@ -579,19 +561,6 @@ $('#restart').onclick = async () => {
   catch (e) { toast('\u26a0\ufe0f restart failed'); }
 };
 
-function setAutoPause(on) {
-  $('#autopause').checked = !!on;
-  $('#ap-wrap').classList.toggle('on', !!on);
-}
-$('#autopause').onchange = async e => {
-  const on = e.target.checked;
-  setAutoPause(on);
-  try {
-    const r = await fetch('/api/autopause', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }) });
-    if (r.ok) setAutoPause((await r.json()).auto_pause);
-  } catch (_) { /* no session yet — the server keeps the preference anyway */ }
-};
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' && document.body.classList.contains('playing') &&
       !/^(INPUT|TEXTAREA|BUTTON)$/.test((e.target || {}).tagName || '')) {

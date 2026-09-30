@@ -18,7 +18,6 @@ from fastapi.staticfiles import StaticFiles
 from app.pipeline import MODEL_ID, ROOT, RUNS, Session, Telemetry, load_flights
 
 SF_WEBHOOK_URL = os.environ.get("SF_WEBHOOK_URL", "")  # empty -> local inbox
-AUTO_PAUSE = True   # UI toggle: hold the pass at each reported pole. Survives flight switches.
 
 
 def flight_by_id(flight_id: Optional[str]):
@@ -97,7 +96,6 @@ def start_session(video_path, mode, flight):
         session = Session(video_path, mode=mode, flight=flight)
     except RuntimeError as e:  # e.g. missing API key for this flight's workspace
         raise HTTPException(400, str(e))
-    session.pause_on_report = AUTO_PAUSE and mode == "drone"   # carry the toggle over
     session.start()
     global ARCHIVE
     ARCHIVE = None      # the live session is now the source of truth
@@ -143,17 +141,6 @@ def seek(body: dict):
     return {"t": body.get("t"), "duration": s.duration}
 
 
-@app.post("/api/autopause")
-def autopause(body: Optional[dict] = None):
-    """Hold at each reported pole, or play straight through. Body {"on": bool}; omit to toggle."""
-    global AUTO_PAUSE
-    want = (body or {}).get("on")
-    AUTO_PAUSE = (not AUTO_PAUSE) if want is None else bool(want)
-    if session is not None:
-        session.pause_on_report = AUTO_PAUSE and session.mode == "drone"
-    return {"auto_pause": AUTO_PAUSE}
-
-
 @app.post("/api/restart")
 def restart():
     """Replay the current flight from the top, held on its opening frame."""
@@ -195,7 +182,7 @@ def state():
     return {"state": "running" if (session.running and not session.finished) else
                      ("review" if session.running else "ended"),
             "session": session.id, "mode": session.mode, "stats": session.stats,
-            "paused": session.paused, "auto_pause": session.pause_on_report,
+            "paused": session.paused,
             "duration": session.duration, "seekable": session.finished and session.running,
             "incidents": [Session.public_incident(i) for i in session.incidents.values()]}
 
@@ -263,7 +250,7 @@ async def events(request: Request):
                             "flight": s.flight.get("id"), "flight_name": s.flight.get("name"),
                             "cached": s.cache is not None,
                             "seekable": s.finished and s.running,
-                            "paused": s.paused, "auto_pause": s.pause_on_report,
+                            "paused": s.paused,
                             "incidents": len(s.incidents)}) + "\n\n"
                     # the opening fix is emitted before any subscriber attaches,
                     # so replay it or the map never leaves the globe

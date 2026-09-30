@@ -42,16 +42,16 @@ Docker works too: `SALES_DEMO_KEY=... docker compose up --build`.
 2. **Report events** fire at fixed points in the clip, each using its pre-made render. Drone 2
    reports five downed poles (1.5 s, 20 s, 29 s, 34 s, 42 s); Drone 1 reports two maintenance
    jobs — vegetation into the span (4.1 s) and a pole out of plumb (10.7 s). The feed "takes a
-   photo" of each pole, which flies into its map popup. By default the pass then **holds** on
-   that pole so the room can look at it — Play carries on. Turn the holds off with the
-   **Auto-pause** switch, top right, to let a flight run straight through. Open the reports with
-   **Repair plans** in the header; they overlay the map. Click a plan image to enlarge it.
+   photo" of each pole, which flies into its map popup while the clip keeps playing. Every class
+   the model knows is shown from the first frame; click a chip in the bar under the feed to hide
+   it. Open the reports with **Repair plans** in the header; they overlay the map. Click a plan
+   image to enlarge it.
 3. **Dispatch** on a card (or **Dispatch all**) creates a Salesforce work order. With no
    `SF_WEBHOOK_URL` set it goes to a built-in inbox (`GET /api/salesforce/inbox`) and mints
    `WO-0000n` numbers, so the flow works with no external dependency.
 4. When the pass ends the clip stays open: drag the **scrub bar** under the feed, or click a
-   card's timestamp, to re-render any frame with its detections. Rewinding never adds or
-   removes report events.
+   card's timestamp, to go back to any frame with the detections exactly as they were shown.
+   Rewinding never adds or removes report events.
 
 Neither flight calls the API: both drones' detections are **pre-computed** into `app/cache/*.json`
 and replayed over the raw clips, so the app draws every mask and label itself and the class filter
