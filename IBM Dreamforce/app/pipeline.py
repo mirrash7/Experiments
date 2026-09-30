@@ -373,12 +373,6 @@ class Session:
         self.in_flight_frames = set()  # frame indices awaiting a result
         self.pending = {}              # finished results waiting for in-order apply
         self._seek = None              # review-mode scrub target (seconds)
-        # A canned flight opens held on its first frame, waiting for Play; an
-        # upload is something the user just handed over, so it runs immediately.
-        # Both holds wait on a UI that FAST mode does not have — headless_run.py
-        # and tune_flight.py drive a Session directly, so under FAST they would
-        # sit on frame 1 forever. FAST means "no pacing, no room": never hold.
-        self.paused = (mode == "drone") and not FAST
         self.last_telemetry = None     # replayed to late subscribers so the map can initialise
         # When a reported pole reaches the screen the UI takes its snapshot into the
         # map popup. Playback never stops for it.
@@ -470,14 +464,6 @@ class Session:
         """Scrub to `t` seconds (review mode, after the pass has finished)."""
         self._seek = max(0.0, min(float(t), self.duration or 0))
 
-    def set_paused(self, on):
-        """Hold the pass on its current frame (Play/Pause button only). The MJPEG
-        stream only pushes when the frame changes, so a paused feed simply sits
-        on the last one."""
-        self.paused = bool(on)
-        self.emit({"type": "paused", "paused": self.paused})
-        return self.paused
-
     def _loop(self):
         cap = cv2.VideoCapture(self.video_path)
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -489,25 +475,14 @@ class Session:
                    "duration": self.duration, "model": self.model_id,
                    "flight": self.flight.get("id"), "flight_name": self.flight.get("name"),
                    "cached": self.cache is not None or self.annotated,
-                   "annotated": self.annotated, "paused": self.paused})
+                   "annotated": self.annotated})
         t0 = time.time()
         # negative so the very first displayed frame clears the >= 0.5s gate:
-        # the map needs a fix to initialise, even when we open held on frame 1
+        # the map needs a fix to initialise as soon as the feed starts
         last_tel = -1.0
+        # A drone feed is live: it plays from the moment the flight connects and
+        # cannot be paused or rewound until the pass is over.
         while self.running:
-            if self.paused and self.latest_jpeg is not None:
-                # Held only once there is a frame on screen to hold — the display
-                # buffer means the first frames are still in flight at startup,
-                # and pausing before then would show an empty panel.
-                # Playback is paced against t0, so the time spent held has to be
-                # added back — otherwise every paused second reads as "behind"
-                # and the clip sprints to catch up the moment it resumes.
-                held = time.time()
-                while self.paused and self.running:
-                    time.sleep(0.05)
-                t0 += time.time() - held
-                if not self.running:
-                    break
             ok, frame = cap.read()
             if not ok:
                 break

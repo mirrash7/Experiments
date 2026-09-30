@@ -141,24 +141,16 @@ def seek(body: dict):
     return {"t": body.get("t"), "duration": s.duration}
 
 
-@app.post("/api/restart")
-def restart():
-    """Replay the current flight from the top, held on its opening frame."""
-    s = current()
-    fid = (s.flight or {}).get("id")
-    if not fid:
-        raise HTTPException(400, "no flight to restart")
-    f = flight_by_id(fid)
-    ns = start_session(f["video_path"], "drone", f)
-    return {"session": ns.id, "flight": fid, "model": ns.model_id}
-
-
-@app.post("/api/pause")
-def pause(body: Optional[dict] = None):
-    """Hold or resume the pass. Body {"paused": bool}; omit it to toggle."""
-    s = current()
-    want = (body or {}).get("paused")
-    return {"paused": s.set_paused((not s.paused) if want is None else bool(want))}
+@app.post("/api/reset")
+def reset():
+    """Back to no drone connected. The page calls this when it loads, so a
+    refresh always lands on the spinning globe with nothing flying and no plans."""
+    global session, ARCHIVE
+    if session:
+        session.stop()
+    session = None
+    ARCHIVE = None
+    return {"ok": True}
 
 
 @app.post("/api/stop")
@@ -182,7 +174,6 @@ def state():
     return {"state": "running" if (session.running and not session.finished) else
                      ("review" if session.running else "ended"),
             "session": session.id, "mode": session.mode, "stats": session.stats,
-            "paused": session.paused,
             "duration": session.duration, "seekable": session.finished and session.running,
             "incidents": [Session.public_incident(i) for i in session.incidents.values()]}
 
@@ -208,8 +199,14 @@ async def stream(request: Request):
     # (40 slots) and only yielded when the frame changed, so once a pass ended
     # it spun on sleep() forever with no yield for GeneratorExit to land on —
     # one stuck thread per tab, until new streams could not be served at all.
+    def part(jpeg):
+        # Content-Length lets a browser know where the part ends without waiting
+        # for the next boundary (not every browser relies on it; see below).
+        return (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n")
+
     async def gen():
-        last = None
+        last, resent, sent_at = None, True, 0.0
         while True:
             if await request.is_disconnected():
                 return
@@ -218,12 +215,15 @@ async def stream(request: Request):
                 await asyncio.sleep(0.1)
                 continue
             if s.latest_jpeg is not last:
-                last = s.latest_jpeg
-                # Content-Length matters: without it a browser only learns a part
-                # has ended when the NEXT boundary arrives. Held on the opening
-                # frame nothing further is sent, so the picture would never appear.
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                       + str(len(last)).encode() + b"\r\n\r\n" + last + b"\r\n")
+                last, resent, sent_at = s.latest_jpeg, False, time.monotonic()
+                yield part(last)
+            elif not resent and time.monotonic() - sent_at > 0.15:
+                # Chrome paints a part only once the next one starts. While the
+                # flight plays that's invisible, but a scrub after the pass sends a
+                # single frame, which would sit unpainted until the next scrub. So
+                # when the picture stops changing, send it once more.
+                resent = True
+                yield part(last)
             await asyncio.sleep(1 / 30)
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
@@ -250,7 +250,6 @@ async def events(request: Request):
                             "flight": s.flight.get("id"), "flight_name": s.flight.get("name"),
                             "cached": s.cache is not None,
                             "seekable": s.finished and s.running,
-                            "paused": s.paused,
                             "incidents": len(s.incidents)}) + "\n\n"
                     # the opening fix is emitted before any subscriber attaches,
                     # so replay it or the map never leaves the globe

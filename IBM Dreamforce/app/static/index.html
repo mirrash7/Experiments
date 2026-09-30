@@ -57,15 +57,6 @@
   #video{position:relative;background:#0F0F1A;padding:0;border-color:#0F0F1A;display:flex;flex-direction:column}
   #video img{width:100%;flex:1;min-height:0;object-fit:contain;display:block}
   #video .hud{position:absolute;top:10px;left:10px;display:flex;gap:8px;align-items:center}
-  #playpause,#restart{display:none;align-items:center;gap:7px;padding:4px 12px 4px 9px;border-radius:999px;
-             background:rgba(16,6,51,.72);color:#fff;border:1px solid rgba(237,230,251,.3);
-             font-size:12px;font-weight:600;cursor:pointer;backdrop-filter:blur(3px)}
-  #playpause:hover,#restart:hover{background:var(--purple);border-color:var(--purple)}
-  #playpause.ready{background:var(--purple);border-color:var(--purple);
-                   box-shadow:0 0 0 6px rgba(103,6,206,.22)}
-  body.playing #playpause,body.playing #restart{display:inline-flex}
-  #restart .glyph{font-size:13px;line-height:1}
-  #playpause .glyph{font-size:11px;line-height:1;letter-spacing:1px}
   #video .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9A9AB5}
   #scrub{display:none;align-items:center;gap:10px;padding:7px 12px;background:#12121f;border-top:1px solid #23233a;color:#C9C9DE;font-size:12px}
   body.seekable #scrub{display:flex}
@@ -148,8 +139,6 @@
     <div class="placeholder" id="ph">Select a drone above to begin</div>
     <img id="feed" alt="" hidden>
     <div class="hud">
-      <button id="playpause" title="Space"><span class="glyph">❚❚</span><span id="pp-label">Pause</span></button>
-      <button id="restart" title="Replay this flight from the start"><span class="glyph">↺</span><span>Restart</span></button>
       <span class="chip" id="det-badge">0 active detections</span>
     </div>
     <div id="scrub">
@@ -215,7 +204,9 @@ function stopGlobe() { if (globeAnim) cancelAnimationFrame(globeAnim); globeAnim
 let flights = [], selectedFlight = null;
 async function initUI() {
   const cfg = await (await fetch('/api/config')).json();
-  flights = cfg.flights; selectedFlight = flights[0];
+  flights = cfg.flights; selectedFlight = null;   // nothing flying until a drone is picked
+  // a refresh always starts from scratch: stop whatever was flying, drop old plans
+  await fetch('/api/reset', { method: 'POST' }).catch(() => {});
   renderTabs();
   startGlobe();
 }
@@ -226,7 +217,11 @@ function renderTabs() {
             onclick="connectFlight('${f.id}')" ${f.available ? '' : 'disabled'}>
       <b>${f.drone_id}</b><span>${f.name}</span></button>`).join('');
 }
+let flightRunning = false;
 async function connectFlight(id) {
+  // a live feed can't be restarted mid-flight: clicking the drone already in the
+  // air does nothing. Any other drone (or this one once it has landed) starts from the top.
+  if (flightRunning && selectedFlight && selectedFlight.id === id) return;
   selectedFlight = flights.find(f => f.id === id); renderTabs();
   $('#live').textContent = 'CONNECTING'; $('#live').className = 'chip neutral';
   await new Promise(r => setTimeout(r, 700));  // handshake theatre
@@ -324,10 +319,6 @@ function connectEvents() {
       shutterToPopup(ev.incident);
       setTimeout(closeIncidentPopups, 4000);
     }
-    else if (ev.type === 'paused') {
-      setPaused(ev.paused);
-      if (!ev.paused) closeIncidentPopups();
-    }
   };
 }
 function onStatus(ev) {
@@ -336,20 +327,20 @@ function onStatus(ev) {
     liveLabel = ev.mode === 'drone' ? 'LIVE \u00b7 ' + ev.drone_id : 'PROCESSING UPLOAD';
     if (ev.flight) { selectedFlight = flights.find(f => f.id === ev.flight) || selectedFlight; renderTabs(); }
     setPlansLabel(selectedFlight && selectedFlight.plans_label);
-    showFeed(ev.drone_id);
+    showFeed(ev.drone_id); startStream();     // live from the first frame
+    $('#live').textContent = liveLabel; $('#live').className = 'chip live';
     $('#stop').disabled = false;
-    document.body.classList.add('playing');
-    // only trust a status that actually reports it — a replayed status without
-    // the field must not silently flip the button to "Pause" on a held clip
-    if (ev.paused !== undefined) setPaused(!!ev.paused);
+    flightRunning = true;
     incidents.clear(); markers.forEach(m => m.remove()); markers.clear(); pendingMarkers.length = 0; $('#cards').innerHTML = '<div class="empty">Scanning…</div>';
     flownCoords = []; updateCounts();
     classBarKey = ''; hiddenClasses = new Set(); $('#classbar').innerHTML = '<span class="lbl">Classes</span>'; $('#classbar').style.display = 'flex';
     if (mapReady) map.getSource('flown').setData(line([]));
   } else if (ev.state === 'ended') {
-    document.body.classList.remove('playing');
+    flightRunning = false;
     $('#live').textContent = 'FLIGHT COMPLETE'; $('#live').className = 'chip neutral';
-    if (ev.seekable) showFeed(ev.drone_id);   // rejoining a finished pass
+    // keep the live stream after the pass: scrubbing pushes new frames down it.
+    // Only a page that joined an already-finished pass needs to open one.
+    if (ev.seekable && ($('#feed') || {}).dataset?.mode !== 'stream') { showFeed(ev.drone_id); startStream(); }
     $('#stop').disabled = true;
     if (ev.seekable && ev.duration) {
       document.body.classList.add('seekable');
@@ -473,17 +464,8 @@ function startStream() {
   img.src = '/stream.mjpg?' + Date.now();
 }
 
-// ---------- play / pause ----------
-let paused = false, liveLabel = 'LIVE';
-function setPaused(on) {
-  paused = on;
-  $('#playpause').querySelector('.glyph').textContent = on ? '\u25B6' : '\u275A\u275A';
-  $('#pp-label').textContent = on ? 'Play' : 'Pause';
-  $('#playpause').classList.toggle('ready', on);
-  $('#live').textContent = on ? 'READY' : liveLabel;
-  $('#live').className = on ? 'chip neutral' : 'chip live';
-  if (!on) startStream();        // Play: hand over from the still to the live feed
-}
+// ---------- snapshot into the map ----------
+let liveLabel = 'LIVE';
 function snapshotFeed() {
   // the feed is a same-origin MJPEG <img>, so a canvas copy is untainted
   const feed = $('#feed');
@@ -548,25 +530,6 @@ function openIncidentPopup(id, tries = 0) {
   const p = m.getPopup();
   if (p && !p.isOpen()) m.togglePopup();
 }
-async function togglePause() {
-  try {
-    const r = await fetch('/api/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    if (r.ok) setPaused((await r.json()).paused);
-  } catch (e) { /* no session — button is hidden anyway */ }
-}
-$('#playpause').onclick = togglePause;
-$('#restart').onclick = async () => {
-  // a fresh session reopens held on frame 1; its 'connected' status resets the UI
-  try { await fetch('/api/restart', { method: 'POST' }); }
-  catch (e) { toast('\u26a0\ufe0f restart failed'); }
-};
-
-document.addEventListener('keydown', e => {
-  if (e.code === 'Space' && document.body.classList.contains('playing') &&
-      !/^(INPUT|TEXTAREA|BUTTON)$/.test((e.target || {}).tagName || '')) {
-    e.preventDefault(); togglePause();
-  }
-});
 
 // ---------- hover zoom ----------
 function zoomIn(id) { zoomSrc(($('#plan-' + id) || {}).src); }
@@ -585,7 +548,7 @@ $('#file').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   toast(`Uploading ${f.name}…`);
   const fd = new FormData(); fd.append('file', f);
-  const r = await fetch('/api/upload?flight=' + encodeURIComponent(selectedFlight.id), { method: 'POST', body: fd });
+  const r = await fetch('/api/upload?flight=' + encodeURIComponent((selectedFlight || flights[0]).id), { method: 'POST', body: fd });
   if (!r.ok) { const err = await r.json().catch(() => ({})); toast(`⚠️ ${err.detail || 'upload failed'}`); }
 };
 async function dispatch(ids) { await fetch('/api/salesforce/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }); }
@@ -594,7 +557,7 @@ $('#report-btn').onclick = () => window.open('/api/report.html', '_blank');
 let toastTimer;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3500); }
 
-initUI(); connectEvents();
+initUI().then(connectEvents);   // reset first, so no stale flight replays into the page
 </script>
 </body>
 </html>

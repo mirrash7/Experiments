@@ -34,11 +34,13 @@ Docker works too: `SALES_DEMO_KEY=... docker compose up --build`.
 
 ## What happens in the demo
 
-1. Click a drone in the header. A short handshake, then the feed opens **held on its first
-   frame** — press **Play** (over the feed) to fly. It then runs at native speed as if it were
-   the drone's RTMP feed, with the detections drawn on it. **Restart** replays the flight from
-   the top; the map stays a spinning globe until the drone reports its first position, then
-   follows it down the road.
+1. Click a drone in the header. After a short handshake the flight plays from its first frame at
+   native speed, as if it were the drone's live RTMP feed, with the detections drawn on it. Like a
+   real feed it can't be paused or restarted mid-flight: clicking the drone that's already flying
+   does nothing. Clicking the other drone (or this one after it lands) starts that flight from
+   the top. The map stays a spinning globe until the drone reports its first position, then
+   follows it down the road. Refreshing the page goes back to the spinning globe with nothing
+   flying.
 2. **Report events** fire at fixed points in the clip, each using its pre-made render. Drone 2
    reports five downed poles (1.5 s, 20 s, 29 s, 34 s, 42 s); Drone 1 reports two maintenance
    jobs — vegetation into the span (4.1 s) and a pole out of plumb (10.7 s). The feed "takes a

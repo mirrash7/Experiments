@@ -101,11 +101,11 @@ The UI lists those actions beside the plan image; clicking the image opens a ful
 `GET /api/incidents/{id}/plan` serves the image, and the Salesforce payload carries
 `findings` + `actions`.
 
-## Restoring after a restart
+## Page refresh
 
-Each run writes `app/runs/<session>/incidents.json`. On startup the server loads the most
-recent one, so the repair plans (and their images) come back after a page refresh or a
-server restart; `/api/state` reports `state: "archived"` until a new flight connects.
+Loading the page calls `POST /api/reset`, which stops any flight and clears the plans, so a
+refresh always lands on the spinning globe with nothing flying. Each run is still saved to
+`app/runs/<session>/incidents.json` for the record.
 
 ## Evidence and class filters
 
