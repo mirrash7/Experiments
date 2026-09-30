@@ -34,24 +34,26 @@ Docker works too: `SALES_DEMO_KEY=... docker compose up --build`.
 
 ## What happens in the demo
 
-1. Click a drone in the header. A short handshake, then the feed opens **held on its first
-   frame** — press **Play** (over the feed) to fly. It then runs at native speed as if it were
-   the drone's RTMP feed, with the detections drawn on it. **Restart** replays the flight from
-   the top; the map stays a spinning globe until the drone reports its first position, then
-   follows it down the road.
+1. Click a drone in the header. After a short handshake the flight plays from its first frame at
+   native speed, as if it were the drone's live RTMP feed, with the detections drawn on it. Like a
+   real feed it can't be paused or restarted mid-flight: clicking the drone that's already flying
+   does nothing. Clicking the other drone (or this one after it lands) starts that flight from
+   the top. The map stays a spinning globe until the drone reports its first position, then
+   follows it down the road. Refreshing the page goes back to the spinning globe with nothing
+   flying.
 2. **Report events** fire at fixed points in the clip, each using its pre-made render. Drone 2
    reports five downed poles (1.5 s, 20 s, 29 s, 34 s, 42 s); Drone 1 reports two maintenance
    jobs — vegetation into the span (4.1 s) and a pole out of plumb (10.7 s). The feed "takes a
-   photo" of each pole, which flies into its map popup. By default the pass then **holds** on
-   that pole so the room can look at it — Play carries on. Turn the holds off with the
-   **Auto-pause** switch, top right, to let a flight run straight through. Open the reports with
-   **Repair plans** in the header; they overlay the map. Click a plan image to enlarge it.
+   photo" of each pole, which flies into its map popup while the clip keeps playing. Every class
+   the model knows is shown from the first frame; click a chip in the bar under the feed to hide
+   it. Open the reports with **Repair plans** in the header; they overlay the map. Click a plan
+   image to enlarge it.
 3. **Dispatch** on a card (or **Dispatch all**) creates a Salesforce work order. With no
    `SF_WEBHOOK_URL` set it goes to a built-in inbox (`GET /api/salesforce/inbox`) and mints
    `WO-0000n` numbers, so the flow works with no external dependency.
 4. When the pass ends the clip stays open: drag the **scrub bar** under the feed, or click a
-   card's timestamp, to re-render any frame with its detections. Rewinding never adds or
-   removes report events.
+   card's timestamp, to go back to any frame with the detections exactly as they were shown.
+   Rewinding never adds or removes report events.
 
 Neither flight calls the API: both drones' detections are **pre-computed** into `app/cache/*.json`
 and replayed over the raw clips, so the app draws every mask and label itself and the class filter

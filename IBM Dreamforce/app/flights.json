@@ -1,5 +1,5 @@
 {
-  "_note": "Each flight = one clip + the model that runs on it (+ telemetry). api_key_env names an .env variable holding the API key for that model's workspace; omitted = ROBOFLOW_API_KEY. alert_classes = class names that count as 'line down' (default: any class containing 'broken'). show_classes = classes visible by default (all are still tracked; toggle in the UI). hide_classes = classes that start toggled off (alert_classes are never hidden). cache = pre-computed detections (scripts/precompute.py) so the demo plays instantly with no live inference dependency. annotated = the clip already has the model's render burned in, so play it untouched and draw nothing over it.",
+  "_note": "Each flight = one clip + the model that runs on it (+ telemetry). api_key_env names an .env variable holding the API key for that model's workspace; omitted = ROBOFLOW_API_KEY. alert_classes = class names that count as 'line down' (default: any class containing 'broken'). show_classes = classes visible by default (all are still tracked; toggle in the UI). cache = pre-computed detections (scripts/precompute.py) so the demo plays instantly with no live inference dependency. annotated = the clip already has the model's render burned in, so play it untouched and draw nothing over it.",
   "flights": [
     {
       "id": "pre-storm",
@@ -25,12 +25,6 @@
       "telemetry": "app/telemetry_springfield.json",
       "alert_classes": [
         "broken-wooden-pole"
-      ],
-      "hide_classes": [
-        "tree",
-        "dense-vegetation",
-        "fallen-branch",
-        "street-sign"
       ],
       "cache": "app/cache/post-storm.json",
       "detection": {

@@ -373,19 +373,11 @@ class Session:
         self.in_flight_frames = set()  # frame indices awaiting a result
         self.pending = {}              # finished results waiting for in-order apply
         self._seek = None              # review-mode scrub target (seconds)
-        # A canned flight opens held on its first frame, waiting for Play; an
-        # upload is something the user just handed over, so it runs immediately.
-        # Both holds wait on a UI that FAST mode does not have — headless_run.py
-        # and tune_flight.py drive a Session directly, so under FAST they would
-        # sit on frame 1 forever. FAST means "no pacing, no room": never hold.
-        self.paused = (mode == "drone") and not FAST
         self.last_telemetry = None     # replayed to late subscribers so the map can initialise
-        # Hold the pass as each reported pole reaches the screen, so the room can
-        # look at it before the clip moves on. Play resumes.
-        self.pause_on_report = (bool(self.flight.get("pause_on_report", True))
-                                and mode == "drone" and not FAST)
-        self._pause_at = None          # display-frame index to hold on
-        self._pause_for = None         # which pole that hold belongs to
+        # When a reported pole reaches the screen the UI takes its snapshot into the
+        # map popup. Playback never stops for it.
+        self._shot_at = None           # display-frame index the snapshot fires on
+        self._shot_for = None          # which pole that snapshot belongs to
         self.last_gray = None          # gray of the last *applied* inferred frame
         self.tracker = Tracker()
 
@@ -397,6 +389,7 @@ class Session:
         self.latest_jpeg = None
         self.latest_preds = []        # display-space predictions (newest inference)
         self.pred_history = []        # [{frame, dets, gray}] recent inferences
+        self.review_history = []      # the same for the whole pass, in frame order (scrubbing)
         self.buffer = []              # [(frame_idx, t, disp, gray)] awaiting display
         self.latency = 0.0
         self.stats = {"frames": 0, "inferences": 0, "detections": 0, "infer_fps": 0.0}
@@ -471,17 +464,6 @@ class Session:
         """Scrub to `t` seconds (review mode, after the pass has finished)."""
         self._seek = max(0.0, min(float(t), self.duration or 0))
 
-    def set_paused(self, on, incident=None):
-        """Hold the pass on its current frame. The MJPEG stream only pushes when
-        the frame changes, so a paused feed simply sits on the last one.
-
-        `incident` names the pole this hold is for, so the UI can open that
-        marker's popup; a manual pause carries None.
-        """
-        self.paused = bool(on)
-        self.emit({"type": "paused", "paused": self.paused, "incident": incident})
-        return self.paused
-
     def _loop(self):
         cap = cv2.VideoCapture(self.video_path)
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -493,26 +475,14 @@ class Session:
                    "duration": self.duration, "model": self.model_id,
                    "flight": self.flight.get("id"), "flight_name": self.flight.get("name"),
                    "cached": self.cache is not None or self.annotated,
-                   "annotated": self.annotated, "paused": self.paused,
-                   "auto_pause": self.pause_on_report})
+                   "annotated": self.annotated})
         t0 = time.time()
         # negative so the very first displayed frame clears the >= 0.5s gate:
-        # the map needs a fix to initialise, even when we open held on frame 1
+        # the map needs a fix to initialise as soon as the feed starts
         last_tel = -1.0
+        # A drone feed is live: it plays from the moment the flight connects and
+        # cannot be paused or rewound until the pass is over.
         while self.running:
-            if self.paused and self.latest_jpeg is not None:
-                # Held only once there is a frame on screen to hold — the display
-                # buffer means the first frames are still in flight at startup,
-                # and pausing before then would show an empty panel.
-                # Playback is paced against t0, so the time spent held has to be
-                # added back — otherwise every paused second reads as "behind"
-                # and the clip sprints to catch up the moment it resumes.
-                held = time.time()
-                while self.paused and self.running:
-                    time.sleep(0.05)
-                t0 += time.time() - held
-                if not self.running:
-                    break
             ok, frame = cap.read()
             if not ok:
                 break
@@ -556,13 +526,10 @@ class Session:
             shown_t = t
             if len(self.buffer) > delay_frames:
                 s_idx, shown_t, s_disp, s_gray = self.buffer.pop(0)
-                if self._pause_at is not None and s_idx >= self._pause_at:
-                    self._pause_at, hold_for = None, self._pause_for
-                    self._pause_for = None
-                    self.emit({"type": "report_shot", "incident": hold_for,
-                               "hold": self.pause_on_report})
-                    if self.pause_on_report:
-                        self.set_paused(True, hold_for)
+                if self._shot_at is not None and s_idx >= self._shot_at:
+                    self._shot_at, shot_for = None, self._shot_for
+                    self._shot_for = None
+                    self.emit({"type": "report_shot", "incident": shot_for})
                 preds, shift = self._preds_for(s_idx, s_gray)
                 out = self._render(s_disp, shown_t, preds, shift)
                 ok2, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -611,8 +578,8 @@ class Session:
                 continue
             h, w = frame.shape[:2]
             disp = cv2.resize(frame, (DISPLAY_WIDTH, int(h * DISPLAY_WIDTH / w)))
-            preds, _ = self._preds_for(idx, self._gray(disp))
-            out = self._render(disp, idx / self.fps, preds)
+            preds, shift = self._preds_for(idx, self._gray(disp), whole_pass=True)
+            out = self._render(disp, idx / self.fps, preds, shift)
             ok2, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok2:
                 self.latest_jpeg = buf.tobytes()
@@ -678,6 +645,11 @@ class Session:
             self.latest_preds = dets
             self.pred_history.append({"frame": oldest, "dets": dets, "gray": r["gray"]})
             self.pred_history = self.pred_history[-12:]
+            # every inference of the pass, for scrubbing back once it has finished;
+            # copied out of the tracker so later track updates can't change it
+            self.review_history.append({"frame": oldest, "gray": r["gray"], "dets": [
+                {"class": d["class"], "confidence": d["confidence"], "box": d["box"], "points": d["points"]}
+                for d in dets]})
             self.latency = time.time() - r["t_sub"]
             self.stats["inferences"] += 1
             self.stats["detections"] += len(dets)
@@ -789,9 +761,9 @@ class Session:
         self.emit({"type": "incident", **self.public_incident(inc)})
         # Arm against the CURRENT capture frame; the gate below fires when that
         # frame is the one actually being displayed, not when it was ingested.
-        # Always armed: the shutter fires either way, only the hold is optional.
-        self._pause_at = self.frame_idx
-        self._pause_for = inc["id"]
+        # the UI snapshots this pole into its map popup once the frame is on screen
+        self._shot_at = self.frame_idx
+        self._shot_for = inc["id"]
 
     def _persist(self):
         """Write the run's incidents to disk so the UI can restore them later."""
@@ -863,9 +835,9 @@ class Session:
         self.emit({"type": "incident", **self.public_incident(inc)})
         # Arm against the CURRENT capture frame; the gate below fires when that
         # frame is the one actually being displayed, not when it was ingested.
-        # Always armed: the shutter fires either way, only the hold is optional.
-        self._pause_at = self.frame_idx
-        self._pause_for = inc["id"]
+        # the UI snapshots this pole into its map popup once the frame is on screen
+        self._shot_at = self.frame_idx
+        self._shot_for = inc["id"]
 
     def _plan(self, iid, findings, frame, dw):
         """Branded repair-plan image for this pole (numbered findings + actions)."""
@@ -926,11 +898,12 @@ class Session:
         g = cv2.cvtColor(cv2.resize(img, (ALIGN_WIDTH, int(h * ALIGN_WIDTH / w))), cv2.COLOR_BGR2GRAY)
         return np.float32(g)
 
-    def _preds_for(self, frame_idx, gray):
+    def _preds_for(self, frame_idx, gray, whole_pass=False):
         """Inference nearest to frame_idx, plus the pixel shift (display space)
-        from that inferred frame to this one."""
+        from that inferred frame to this one. whole_pass searches every inference
+        of the flight (review/scrubbing) instead of only the recent ones."""
         with self.lock:
-            hist = list(self.pred_history)
+            hist = list(self.review_history if whole_pass else self.pred_history)
         if not hist:
             return [], (0.0, 0.0)
         best = min(hist, key=lambda h: abs(h["frame"] - frame_idx))
