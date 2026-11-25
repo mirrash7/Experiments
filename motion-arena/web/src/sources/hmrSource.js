@@ -1,5 +1,10 @@
 // InstantHMR source: streams JPEG frames to the local Python server (server/hmr_server.py) over a WebSocket
-// and turns its 70 MHR keypoints into the canonical pose.
+// and turns its 70 MHR keypoints into the canonical pose. Protocol 2 servers also send the MHR parameters;
+// they are passed through on the frame for the motion pipeline (web/src/motion):
+//   frame.mhr   Float32Array(204) MHR model parameters      frame.shape  Float32Array(45) identity coefficients
+//   frame.camT  [x,y,z] camera translation (m, camera axes) frame.j3d    raw 70x3 camera-frame keypoints
+//   frame.kp3d  70 THREE.Vector3 keypoints (three axes)     frame.tArrive  performance.now() when the reply arrived
+// The socket reconnects by itself (1 s .. 5 s back-off) so a server restart is picked up without a reload.
 import { camToThree } from '../pose.js';
 
 // MHR70 indices (vendor/InstantHMR/instanthmr/skeleton.py)
@@ -40,17 +45,31 @@ export class HMRSource {
 
   start() {
     this.stop();
-    this.onStatus('connecting', `Connecting to ${this.url}…`);
-    const ws = (this.ws = new WebSocket(this.url));
-    ws.binaryType = 'arraybuffer';
-    ws.onopen = () => this.onStatus('connected', 'Connected — waiting for model');
-    ws.onerror = () => this.onStatus('error', 'Cannot reach InstantHMR server. Start it with ./server/run.sh');
-    ws.onclose = () => { if (this.ws === ws) this.onStatus('error', 'InstantHMR server disconnected'); };
-    ws.onmessage = (e) => this._onMessage(e.data);
+    this._wantRun = true;
+    this._backoff = 1000;
+    this._connect();
     this._unsub = this.camera.onFrame((video, t) => this._maybeSend(video, t));
   }
 
+  _connect() {
+    clearTimeout(this._retry);
+    this.onStatus('connecting', `Connecting to ${this.url}…`);
+    const ws = (this.ws = new WebSocket(this.url));
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { this._backoff = 1000; this.onStatus('connected', 'Connected — waiting for model'); };
+    ws.onerror = () => this.onStatus('error', 'Cannot reach InstantHMR server. Start it with ./server/run.sh');
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
+      this.ws = null; this.pending.clear(); this._encoding = false;
+      this.onStatus('error', 'InstantHMR server disconnected — retrying');
+      if (this._wantRun) { this._retry = setTimeout(() => this._connect(), this._backoff); this._backoff = Math.min(5000, this._backoff * 1.6); }
+    };
+    ws.onmessage = (e) => this._onMessage(e.data);
+  }
+
   stop() {
+    this._wantRun = false;
+    clearTimeout(this._retry);
     if (this._unsub) this._unsub();
     this._unsub = null;
     if (this.ws) { const ws = this.ws; this.ws = null; ws.close(); }
@@ -90,6 +109,7 @@ export class HMRSource {
     const msg = JSON.parse(data);
     if (msg.type === 'hello') {
       this.model = msg.model || '';
+      this.protocol = msg.protocol ?? 1;
       this.onStatus('ready', `InstantHMR ready — ${this.model}`);
       return;
     }
@@ -97,45 +117,61 @@ export class HMRSource {
     const p = this.pending.get(msg.id);
     this.pending.delete(msg.id);
     if (!p) return;
-    const now = performance.now();
-    const rtt = now - p.tSent;
-    const timing = {
-      encode: p.encode,
-      decode: msg.timing?.decode ?? 0,
-      detect: msg.timing?.detect ?? 0,
-      hmr: msg.timing?.hmr ?? 0,
-      server: msg.timing?.total ?? 0,
-      transport: Math.max(0, rtt - (msg.timing?.total ?? 0)),
-      rtt,
-    };
     if (msg.model) this.model = msg.model;
-    const person = msg.persons?.[0];
-    if (!person) {
-      this.onPose({ source: 'hmr', tCapture: p.tCapture, joints: null, conf: {}, kp2d: [], edges: HMR_EDGES, timing });
-      return;
-    }
-    const J = person.j3d, K = person.j2d;
-    const joints = {}, conf = {};
-    const c = Math.max(0.05, Math.min(1, person.conf ?? 1));
-    for (const [name, idx] of Object.entries(I)) {
-      joints[name] = camToThree(J[idx][0], J[idx][1], J[idx][2]);
-      conf[name] = c;
-    }
-    joints.leftHand = centroid(J, LEFT_FINGERS); conf.leftHand = c;
-    joints.rightHand = centroid(J, RIGHT_FINGERS); conf.rightHand = c;
-
-    // Keypoints near the frame edge (or outside it) are extrapolated: lower their confidence so the
-    // avatar keeps a neutral pose for limbs the camera can't see.
-    const W = msg.w || p.w, H = msg.h || p.h;
-    const kp2d = K.map(([u, v]) => {
-      const inside = u > -0.02 * W && u < 1.02 * W && v > -0.02 * H && v < 1.0 * H;
-      return { x: u / W, y: v / H, c: inside ? c : 0.1 };
-    });
-    for (const [name, idx] of Object.entries(I)) conf[name] = Math.min(conf[name], kp2d[idx].c);
-    conf.leftHand = conf.leftWrist; conf.rightHand = conf.rightWrist;
-
-    this.onPose({ source: 'hmr', tCapture: p.tCapture, joints, conf, kp2d, edges: HMR_EDGES, timing, absolute: true });
+    this.onPose(parseHMRPose(msg, p));
   }
+}
+
+/**
+ * Server pose message + its pending-request record {tCapture, tSent, encode, w, h} -> canonical PoseFrame.
+ * Exported so recorded server replies can be replayed through exactly the same path (recordedSource.js).
+ */
+export function parseHMRPose(msg, p, now = performance.now()) {
+  const rtt = now - p.tSent;
+  const timing = {
+    encode: p.encode,
+    decode: msg.timing?.decode ?? 0,
+    detect: msg.timing?.detect ?? 0,
+    hmr: msg.timing?.hmr ?? 0,
+    server: msg.timing?.total ?? 0,
+    transport: Math.max(0, rtt - (msg.timing?.total ?? 0)),
+    rtt,
+  };
+  const person = msg.persons?.[0];
+  if (!person) {
+    return { source: 'hmr', tCapture: p.tCapture, tArrive: now, joints: null, conf: {}, kp2d: [], edges: HMR_EDGES, timing };
+  }
+  const J = person.j3d, K = person.j2d;
+  const joints = {}, conf = {};
+  const c = Math.max(0.05, Math.min(1, person.conf ?? 1));
+  for (const [name, idx] of Object.entries(I)) {
+    joints[name] = camToThree(J[idx][0], J[idx][1], J[idx][2]);
+    conf[name] = c;
+  }
+  joints.leftHand = centroid(J, LEFT_FINGERS); conf.leftHand = c;
+  joints.rightHand = centroid(J, RIGHT_FINGERS); conf.rightHand = c;
+
+  // Keypoints near the frame edge (or outside it) are extrapolated: lower their confidence so the
+  // avatar keeps a neutral pose for limbs the camera can't see.
+  const W = msg.w || p.w, H = msg.h || p.h;
+  const kp2d = K.map(([u, v]) => {
+    const inside = u > -0.02 * W && u < 1.02 * W && v > -0.02 * H && v < 1.0 * H;
+    return { x: u / W, y: v / H, c: inside ? c : 0.1 };
+  });
+  for (const [name, idx] of Object.entries(I)) conf[name] = Math.min(conf[name], kp2d[idx].c);
+  conf.leftHand = conf.leftWrist; conf.rightHand = conf.rightWrist;
+
+  const frame = { source: 'hmr', tCapture: p.tCapture, tArrive: now, joints, conf, kp2d, edges: HMR_EDGES, timing, absolute: true };
+  frame.j3d = J;
+  frame.kp3d = J.map((j) => camToThree(j[0], j[1], j[2]));
+  frame.kpConf = kp2d.map((k) => k.c);
+  if (person.mhr) {
+    frame.mhr = Float32Array.from(person.mhr);
+    frame.shape = person.shape ? Float32Array.from(person.shape) : null;
+    frame.camT = person.cam_t;
+    frame.focal = person.focal;
+  }
+  return frame;
 }
 
 function centroid(J, idxs) {

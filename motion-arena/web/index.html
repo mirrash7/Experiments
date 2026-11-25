@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Motion Arena</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%23ff4d4d%22/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;600;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/src/style.css" />
@@ -16,6 +17,7 @@
     <div class="logo">MOTION<span>ARENA</span></div>
     <div id="status" class="pill"><i></i><span>Idle</span></div>
     <div class="spacer"></div>
+    <button id="hudToggle" class="hudbtn on" title="Collapse the HUD for play (H)">HUD</button>
     <div class="seg" id="modes">
       <button data-mode="free" class="on">Free Move</button>
       <button data-mode="reaction">Reaction Test</button>
@@ -49,6 +51,21 @@
     <label class="check"><input type="checkbox" id="mirror" checked /> Mirror mode</label>
     <label class="check"><input type="checkbox" id="pipeline" /> 2 frames in flight (HMR: more fps, same latency)</label>
     <label class="check"><input type="checkbox" id="showSkel" checked /> Show tracked skeleton in 3D</label>
+    <h3>Character</h3>
+    <label>Model <select id="modelSel"></select></label>
+    <div class="credit" id="modelCredit">–</div>
+    <label>Quality
+      <select id="qualitySel">
+        <option value="auto">Auto (High, drops if slow)</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+    </label>
+    <div class="checks">
+      <label class="check"><input type="checkbox" id="outlinesChk" checked /> Outlines</label>
+      <label class="check"><input type="checkbox" id="wireChk" /> Wireframe</label>
+    </div>
     <h3>Camera view</h3>
     <div class="seg small" id="views">
       <button data-view="front" class="on">Front</button>
@@ -82,10 +99,26 @@
       <div>Visible joints<b id="mVis">–</b></div>
       <div>Model<b id="mModel" class="small">–</b></div>
     </div>
+    <h3>Rendering</h3>
+    <div class="grid">
+      <div>Draws<b id="mDraws">–</b></div>
+      <div>Tris<b id="mTris">–</b></div>
+      <div>Frame ms<b id="mFrameMs">–</b></div>
+      <div>Preset<b id="mTier" class="small">–</b></div>
+      <div>Pixel ratio<b id="mDpr">–</b></div>
+      <div>Hero ms<b id="mHeroMs">–</b></div>
+    </div>
     <h3>Triggers</h3>
     <div id="triggers"></div>
     <div id="log"></div>
   </aside>
+
+  <!-- Compact play HUD (shown while the panels are collapsed) -->
+  <div id="mini" class="panel">
+    <div class="mrow"><b id="miniLat">–</b><small>ms latency</small><span class="sep"></span><b id="miniFps">–</b><small>fps</small><span class="sep"></span><b id="miniTrack">–</b><small>track</small></div>
+    <div id="miniTrig"></div>
+    <div class="mhint">H: full HUD</div>
+  </div>
 
   <!-- Webcam preview -->
   <div id="preview">
@@ -101,6 +134,7 @@
   <div id="meter"><div class="bar"><i></i></div><div class="label"></div></div>
   <div id="results" class="panel hidden"><h2></h2><table></table><div class="foot"></div><button id="closeResults">Close</button></div>
   <div id="floaters"></div>
+  <div id="loading" class="hidden"><div class="t">Loading…</div><div class="bar"><i></i></div></div>
 
   <script type="module" src="/src/main.js"></script>
 </body>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VRM Spike</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #9cc8f0; overflow: hidden; font: 13px system-ui, sans-serif; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #info { position: fixed; left: 12px; top: 10px; background: #0009; color: #fff; padding: 8px 10px; border-radius: 8px; white-space: pre; }
+  </style>
+</head>
+<body>
+  <div id="info">loading…</div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    const cam = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.05, 50);
+    cam.position.set(0, 1.25, 3.4);
+    const controls = new OrbitControls(cam, renderer.domElement);
+    controls.target.set(0, 1.0, 0); controls.update();
+    const sun = new THREE.DirectionalLight(0xffffff, Math.PI);
+    sun.position.set(1, 2, 2);
+    scene.add(sun, new THREE.AmbientLight(0xffffff, 0.6));
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(3, 48), new THREE.MeshStandardMaterial({ color: 0x8fbf6a }));
+    ground.rotation.x = -Math.PI / 2; scene.add(ground);
+
+    const loader = new GLTFLoader();
+    loader.register((p) => new VRMLoaderPlugin(p));
+    const t0 = performance.now();
+    const gltf = await loader.loadAsync(new URLSearchParams(location.search).get('vrm') || '/vrm/VRM1_Constraint_Twist_Sample.vrm');
+    const vrm = gltf.userData.vrm;
+    VRMUtils.rotateVRM0(vrm); // VRM 0.x models face -Z; no-op for VRM 1.0
+    VRMUtils.removeUnnecessaryVertices(gltf.scene);
+    VRMUtils.combineSkeletons(gltf.scene);
+    vrm.scene.traverse((o) => { o.frustumCulled = false; });
+    scene.add(vrm.scene);
+    const loadMs = performance.now() - t0;
+    let tris = 0, draws = 0;
+    vrm.scene.traverse((o) => { if (o.isMesh) { draws++; tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3; } });
+
+    const h = vrm.humanoid;
+    const bone = (n) => h.getNormalizedBoneNode(n);
+    const clock = new THREE.Clock();
+    window.vrm = vrm;
+    (function loop() {
+      requestAnimationFrame(loop);
+      const dt = clock.getDelta(), t = clock.elapsedTime;
+      // simple idle: arms down, breathing, sway, wave
+      bone('leftUpperArm').rotation.z = -1.15 + Math.sin(t * 1.6) * 0.03;
+      bone('rightUpperArm').rotation.z = 1.15 - Math.sin(t * 1.6) * 0.03;
+      bone('leftLowerArm').rotation.y = -0.25; bone('rightLowerArm').rotation.y = 0.25;
+      bone('spine').rotation.x = Math.sin(t * 1.6) * 0.02;
+      bone('hips').rotation.y = Math.sin(t * 0.7) * 0.25;
+      bone('hips').position.x = Math.sin(t * 0.7) * 0.05;
+      bone('head').rotation.y = Math.sin(t * 0.9) * 0.3;
+      vrm.expressionManager?.setValue('happy', (Math.sin(t * 0.8) + 1) / 2);
+      vrm.expressionManager?.setValue('blink', Math.max(0, Math.sin(t * 2.3) * 8 - 7));
+      const u0 = performance.now();
+      vrm.update(dt);
+      const um = performance.now() - u0;
+      renderer.render(scene, cam);
+      document.getElementById('info').textContent =
+        `VRM ${vrm.meta?.metaVersion ?? '?'}  "${vrm.meta?.name ?? ''}"\nload ${loadMs.toFixed(0)} ms · ${draws} meshes · ${Math.round(tris)} tris\nvrm.update ${um.toFixed(2)} ms · springs ${vrm.springBoneManager?.joints?.size ?? 0}\nexpressions: ${Object.keys(vrm.expressionManager?.expressionMap ?? {}).join(', ')}`;
+    })();
+    addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
+  </script>
+</body>
+</html>

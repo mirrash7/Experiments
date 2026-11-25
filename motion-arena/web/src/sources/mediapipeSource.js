@@ -10,6 +10,8 @@ const I = {
   leftAnkle: 27, rightAnkle: 28, leftHeel: 29, rightHeel: 30, leftToe: 31, rightToe: 32,
 };
 
+const EXTRA = { leftPinky: 17, rightPinky: 18, leftIndex: 19, rightIndex: 20, leftThumb: 21, rightThumb: 22 };
+
 export const MP_EDGES = [
   [11, 12], [11, 23], [12, 24], [23, 24], [11, 13], [13, 15], [12, 14], [14, 16],
   [15, 19], [15, 17], [17, 19], [16, 20], [16, 18], [18, 20],
@@ -88,8 +90,11 @@ export class MediaPipeSource {
     const root = new THREE.Vector3((hipN.x - 0.5) * aspect * mPerN, -(hipN.y - 0.5) * mPerN, -mPerN * 1.2);
     for (const k of Object.keys(joints)) joints[k].add(root);
 
+    // extra landmarks for the motion pipeline's keypoint solver: palm index/pinky/thumb give wrist twist
+    const extra = {};
+    for (const [name, idx] of Object.entries(EXTRA)) { extra[name] = camToThree(wl[idx].x, wl[idx].y, wl[idx].z).add(root); conf[name] = visible(lm[idx]); }
     const kp2d = lm.map((p) => ({ x: p.x, y: p.y, c: visible(p) }));
-    this.onPose({ source: 'mediapipe', tCapture, joints, conf, kp2d, edges: MP_EDGES, timing, absolute: false });
+    this.onPose({ source: 'mediapipe', tCapture, tArrive: performance.now(), joints, conf, extra, kp2d, edges: MP_EDGES, timing, absolute: false });
   }
 }
 

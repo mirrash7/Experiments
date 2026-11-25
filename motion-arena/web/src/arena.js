@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 
 function toonGradient() {
-  const data = new Uint8Array([90, 170, 255]);
+  const data = new Uint8Array([110, 185, 255]); // 3-step ramp, shade band lifted to sit next to MToon
   const tex = new THREE.DataTexture(data, 3, 1, THREE.RedFormat);
   tex.minFilter = tex.magFilter = THREE.NearestFilter;
   tex.needsUpdate = true;
@@ -73,6 +73,20 @@ export function buildArena(scene) {
     p.position.set(i * 0.5, -0.06, 0); p.receiveShadow = true; deck.add(p);
   }
   scene.add(deck);
+  // QA v3 r1 P2-3: a soft, slightly darker and cooler pool on the deck around the hero ring, so the warm hero
+  // doesn't sit on an equally warm, equally bright ground (figure/ground contrast). One draw, no lighting.
+  const poolTex = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.55, 'rgba(255,255,255,0.85)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  })();
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(2.6, 48),
+    new THREE.MeshBasicMaterial({ color: '#3b3552', map: poolTex, transparent: true, opacity: 0.22, depthWrite: false }));
+  pool.rotation.x = -Math.PI / 2; pool.position.y = 0.003; pool.renderOrder = -2;
+  scene.add(pool);
+
   // stage ring markers (calibration spot)
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.5, 48), new THREE.MeshBasicMaterial({ color: '#ffd23f', transparent: true, opacity: 0.7 }));
   ring.rotation.x = -Math.PI / 2; ring.position.y = 0.005;
@@ -145,6 +159,11 @@ export function buildArena(scene) {
   scene.add(clouds);
 
   return {
+    sun,
+    /** Direction toward the sun (the hero's shadow caster in render/heroLights.js uses the same one). */
+    sunDirection: sun.position.clone().normalize(),
+    /** Quality presets: Low turns the shadow maps off. */
+    setShadows(on) { sun.castShadow = !!on; },
     update(dt, t) {
       const p = seaGeo.attributes.position.array;
       for (let i = 0; i < p.length; i += 3) {

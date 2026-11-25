@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Motion Lab</title>
+  <style>
+    :root { --bg: #11151c; --panel: #1b212bdd; --fg: #e6edf3; --dim: #8b98a5; --acc: #ffb547; --ok: #4ade80; --bad: #f87171; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 12px/1.35 system-ui, sans-serif; overflow: hidden; }
+    canvas#view { display: block; width: 100vw; height: 100vh; }
+    .panel { position: fixed; top: 10px; background: var(--panel); border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); max-height: calc(100vh - 40px); overflow: auto; }
+    #ctl { left: 10px; width: 230px; }
+    #met { right: 10px; width: 270px; font-variant-numeric: tabular-nums; }
+    h3 { margin: 8px 0 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--acc); }
+    h3:first-child { margin-top: 0; }
+    label { display: flex; align-items: center; gap: 6px; margin: 2px 0; color: var(--fg); }
+    label.row { justify-content: space-between; }
+    select, button { background: #2a3240; color: var(--fg); border: 1px solid #3b4556; border-radius: 6px; padding: 3px 6px; font: inherit; }
+    button { cursor: pointer; } button:hover { border-color: var(--acc); }
+    input[type=range] { width: 110px; }
+    .btns { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; } td { padding: 1px 0; } td:last-child { text-align: right; color: var(--fg); } td:first-child { color: var(--dim); }
+    #status { color: var(--dim); margin-top: 6px; white-space: pre-wrap; }
+    #preview { position: fixed; left: 252px; bottom: 10px; width: 280px; border-radius: 8px; background: #000; display: none; }
+    #events { color: var(--acc); min-height: 16px; }
+    .tag { display: inline-block; padding: 0 5px; border-radius: 4px; background: #2a3240; margin: 1px; }
+    .tag.on { background: var(--ok); color: #000; }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <canvas id="preview" width="320" height="200"></canvas>
+  <div id="ctl" class="panel">
+    <h3>Character</h3>
+    <select id="vrm" style="width:100%">
+      <option value="/vrm/Sakurada_Fumiriya.vrm">Sakurada Fumiriya (VRM0)</option>
+      <option value="/vrm/Seed-san.vrm">Seed-san</option>
+      <option value="/vrm/Base_Male.vrm">Base Male</option>
+      <option value="/vrm/VRM1_Constraint_Twist_Sample.vrm">VRM1 Twist Sample</option>
+    </select>
+    <h3>Source</h3>
+    <select id="source" style="width:100%">
+      <option value="synthetic">Synthetic player</option>
+      <option value="still">Synthetic, standing still + 1 cm noise</option>
+      <option value="clip">Recorded clip (InstantHMR, demo GIF)</option>
+      <option value="hmr">InstantHMR server (camera)</option>
+      <option value="mediapipe">MediaPipe (camera)</option>
+    </select>
+    <div class="btns">
+      <button id="calib">Calibrate (C)</button>
+      <button id="rec">Record</button>
+      <button id="dl" disabled>Download clip</button>
+    </div>
+    <h3>Stages</h3>
+    <label><input type="checkbox" data-opt="mirror" checked> Mirror</label>
+    <label class="row">Solver <select data-opt="solver"><option>auto</option><option>mhr</option><option>keypoints</option></select></label>
+    <label><input type="checkbox" data-opt="limits" checked> Joint limits</label>
+    <label><input type="checkbox" data-opt="wristLimits" checked> Wrist limits (±45° / ±30°)</label>
+    <label class="row"><span><input type="checkbox" data-opt="predict" checked> Predict</span><input type="range" min="0" max="80" step="5" value="50" data-num="predictMs"><span id="predictMsV">50</span></label>
+    <label><input type="checkbox" data-opt="noiseAware" checked> Noise-aware predictor</label>
+    <label><input type="checkbox" data-opt="spring" checked> Tracking spring</label>
+    <label><input type="checkbox" data-opt="confidence" checked> Confidence fade</label>
+    <label><input type="checkbox" data-opt="base" checked> Procedural base</label>
+    <label class="row">Base style <select data-opt="baseStyle"><option>stance</option><option>guard</option><option>relaxed</option></select></label>
+    <label><input type="checkbox" data-opt="accents" checked> Action accents</label>
+    <label class="row">Hands <select data-opt="hands"><option>pose</option><option>tracked</option><option>off</option></select></label>
+    <label><input type="checkbox" data-opt="ikArms" checked> Arm reach IK</label>
+    <label><input type="checkbox" data-opt="reachRemap" checked> Reach remap (full punch)</label>
+    <label><input type="checkbox" data-opt="ikLegs" checked> Leg IK</label>
+    <label><input type="checkbox" data-opt="kneePole" checked> Knee pole (leg IK plane)</label>
+    <label><input type="checkbox" data-opt="footLock" checked> Foot lock</label>
+    <label><input type="checkbox" data-opt="pelvis" checked> Pelvis adjust</label>
+    <label><input type="checkbox" id="follow" checked> Root follow</label>
+    <label><input type="checkbox" id="lookat"> Look at camera</label>
+    <label><input type="checkbox" id="fx" checked> Combat FX (hit-stop, shake, trails, sparks, dust)</label>
+    <h3>View</h3>
+    <label><input type="checkbox" id="showRaw" checked> Raw keypoints</label>
+    <label class="row">Raw offset <input type="range" id="rawOff" min="0" max="1.5" step="0.05" value="0.9"></label>
+    <div id="status">loading…</div>
+  </div>
+  <div id="met" class="panel">
+    <h3>Metrics</h3>
+    <table id="mt"></table>
+    <h3>State</h3>
+    <div id="st"></div>
+    <h3>Actions</h3>
+    <div id="events"></div>
+  </div>
+  <script type="module" src="/src/motion/lab.js"></script>
+</body>
+</html>
