@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Motion Arena</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;600;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <!-- Title / status bar -->
+  <header id="topbar">
+    <div class="logo">MOTION<span>ARENA</span></div>
+    <div id="status" class="pill"><i></i><span>Idle</span></div>
+    <div class="spacer"></div>
+    <div class="seg" id="modes">
+      <button data-mode="free" class="on">Free Move</button>
+      <button data-mode="reaction">Reaction Test</button>
+      <button data-mode="pose">Pose Match</button>
+    </div>
+  </header>
+
+  <!-- Left: setup -->
+  <aside id="setup" class="panel">
+    <h3>Tracking</h3>
+    <label>Source
+      <select id="source">
+        <option value="hmr">InstantHMR (local Python server)</option>
+        <option value="mediapipe">MediaPipe (in-browser)</option>
+        <option value="synthetic">Synthetic demo player (no camera)</option>
+      </select>
+    </label>
+    <label id="camRow">Camera <select id="cameraSel"><option value="">Default</option></select></label>
+    <label id="urlRow">Server <input id="serverUrl" value="ws://127.0.0.1:8791" /></label>
+    <div class="row">
+      <button id="startBtn" class="primary">▶ Start</button>
+      <button id="calibBtn" title="Stand still in your neutral spot, then press">Calibrate</button>
+    </div>
+    <h3>Feel</h3>
+    <label>Smoothing <span class="val" id="smoothVal"></span>
+      <input type="range" id="smooth" min="0" max="1" step="0.05" value="0.3" /></label>
+    <label>Interpolation <span class="val" id="interpVal"></span>
+      <input type="range" id="interp" min="0" max="1" step="0.05" value="0.35" /></label>
+    <label>Trigger sensitivity <span class="val" id="sensVal"></span>
+      <input type="range" id="sens" min="0.6" max="1.6" step="0.05" value="1" /></label>
+    <label class="check"><input type="checkbox" id="mirror" checked /> Mirror mode</label>
+    <label class="check"><input type="checkbox" id="pipeline" /> 2 frames in flight (HMR: more fps, same latency)</label>
+    <label class="check"><input type="checkbox" id="showSkel" checked /> Show tracked skeleton in 3D</label>
+    <h3>Camera view</h3>
+    <div class="seg small" id="views">
+      <button data-view="front" class="on">Front</button>
+      <button data-view="behind">Behind</button>
+      <button data-view="side">Side</button>
+      <button data-view="orbit">Orbit</button>
+    </div>
+    <p class="hint">Stand 2–3 m from the webcam so your whole body is in frame. Good light helps a lot.</p>
+  </aside>
+
+  <!-- Right: metrics -->
+  <aside id="metrics" class="panel">
+    <h3>Responsiveness</h3>
+    <div class="big"><span id="mLatency">–</span><small>ms</small></div>
+    <div class="caption" id="mLatencyCap">camera → avatar on screen</div>
+    <canvas id="latChart" width="260" height="70"></canvas>
+    <div class="grid">
+      <div>p50<b id="mP50">–</b></div>
+      <div>p95<b id="mP95">–</b></div>
+      <div>Track FPS<b id="mTrackFps">–</b></div>
+      <div>Cam FPS<b id="mCamFps">–</b></div>
+      <div>Render FPS<b id="mRenderFps">–</b></div>
+      <div>Dropped<b id="mLost">–</b></div>
+    </div>
+    <h3>Pipeline breakdown</h3>
+    <div id="breakdown" class="bars"></div>
+    <h3>Accuracy</h3>
+    <div class="grid">
+      <div>Confidence<b id="mConf">–</b></div>
+      <div>Jitter<b id="mJitter">–</b></div>
+      <div>Visible joints<b id="mVis">–</b></div>
+      <div>Model<b id="mModel" class="small">–</b></div>
+    </div>
+    <h3>Triggers</h3>
+    <div id="triggers"></div>
+    <div id="log"></div>
+  </aside>
+
+  <!-- Webcam preview -->
+  <div id="preview">
+    <video id="video" muted playsinline></video>
+    <canvas id="overlay"></canvas>
+    <div class="tag" id="previewTag">camera</div>
+  </div>
+
+  <!-- Game overlays -->
+  <div id="prompt"><div class="text"></div><div class="sub"></div></div>
+  <div id="flash"></div>
+  <div id="banner"><div class="t"></div><div class="s"></div></div>
+  <div id="meter"><div class="bar"><i></i></div><div class="label"></div></div>
+  <div id="results" class="panel hidden"><h2></h2><table></table><div class="foot"></div><button id="closeResults">Close</button></div>
+  <div id="floaters"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

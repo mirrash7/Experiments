@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+.venv/
+venv/
+
+# weights and outputs
+*.onnx
+*.pt
+*.pth
+*.rrd
+*.mp4
+*.tar
+*.tar.gz
+models/
+runs/
+checkpoints/
+
+# training data
+data/
+data_*/
+annotations/
+images/
