@@ -1,0 +1,18 @@
+# dependencies / environments
+node_modules/
+server/.venv/
+__pycache__/
+*.pyc
+# downloaded / generated assets (re-create with the setup steps in README.md)
+web/public/models/
+web/public/mediapipe/
+models/
+web/dist/
+# OS / editor
+.DS_Store
+*.log
+
+# local-only
+.claude/
+# copyrighted reference image: kept locally only, never published
+docs/reference.jpg

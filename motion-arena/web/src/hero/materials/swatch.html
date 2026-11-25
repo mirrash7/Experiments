@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hero materials QA (WP1)</title>
+<style>
+  body { margin: 0; font: 12px/1.4 ui-monospace, Menlo, monospace; background: #1b1d24; color: #e6e6ea; }
+  header { padding: 8px 12px; background: #111318; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  h2 { font-size: 13px; margin: 14px 12px 6px; color: #ffd36b; }
+  .row { display: flex; gap: 12px; padding: 0 12px; flex-wrap: wrap; align-items: flex-start; }
+  canvas { display: block; background: #000; }
+  table { border-collapse: collapse; }
+  td, th { padding: 2px 6px; border-bottom: 1px solid #2c2f3a; text-align: left; white-space: nowrap; }
+  .ok { color: #7be08a; } .bad { color: #ff6b6b; }
+  .chip { display: inline-block; width: 12px; height: 12px; vertical-align: middle; border: 1px solid #000; }
+  #summary { font-weight: bold; }
+</style>
+</head>
+<body>
+<header>
+  <b>WP1 materials QA</b>
+  <span id="summary">running...</span>
+  <label>face light yaw <input id="yaw" type="range" min="-120" max="120" value="45" step="1"> <span id="yawv">45</span>°</label>
+</header>
+<h2>1. Palette swatches rendered by the hero toon shader in the game pipeline (columns = matId; rows = base / shade / deep / outline)</h2>
+<div class="row"><canvas id="sw" width="1140" height="360"></canvas></div>
+<div class="row"><table id="tbl"></table></div>
+<h2>2. SDF face shadow: real head (createCharacter parts head+hair), key light yaw 0..90 deg (and -45) around the head</h2>
+<div class="row"><canvas id="face" width="1200" height="200"></canvas></div>
+<div class="row"><canvas id="faceLive" width="360" height="360"></canvas><canvas id="map" width="256" height="256"></canvas><canvas id="mapSweep" width="256" height="256"></canvas></div>
+<h2>3. Outline width (measured from a 2160p render, reported in 1080p px)</h2>
+<div class="row"><table id="otbl"></table></div>
+<script type="module" src="./swatch.js"></script>
+</body>
+</html>

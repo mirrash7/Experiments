@@ -1,0 +1,3 @@
+# InstantHMR runtime deps (numpy, opencv, huggingface_hub, rerun-sdk, rfdetr, onnxruntime on Darwin)
+-r ../vendor/InstantHMR/requirements.txt
+websockets>=13

@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+"""Turn one parquet split + its source frames into a trainable dataset folder.
+
+Output layout, per source dataset (train and test merge into one folder, which
+is what data/ already does and what the training script's discovery expects):
+
+    <data_root>/sam3d_gt_<dataset>/
+        original_images/   the referenced source frames, native relative paths
+        annotations/       <name>.npz
+        body_crops/        <name>.png            224 square person crop
+        hands_crops/       <name>_l.png  <name>_r.png
+        images -> body_crops                     compat symlink, see below
+
+`body_crops` is byte-identical to what `tools/parquet_to_npz.py` writes into
+`images/`: this script imports that module's crop and annotation builders
+rather than re-implementing them, so a folder built here and a folder built
+there are interchangeable. The `images` symlink means the current
+`SAM3DStudentDataset._find_dataset_dirs` finds the folder with no code change.
+
+The npz keeps every key the training script already reads and adds five that
+it ignores today and that a hand branch will need:
+
+    image_relpath   (str)   exact source path — the existing `<dataset>_<stem>`
+                            naming flattens "/" to "_" and is NOT invertible for
+                            harmony4d / egohumans / egoexo4d / 3dpw
+    joints_2d_vis   (70,)   per-keypoint visibility, dropped by parquet_to_npz.
+                            It is all-ones on coco/mpii/aic/3dpw/harmony4d/
+                            egohumans/egoexo4d, but on SA-1B a mean of 44 of 70
+                            keypoints are exactly (0, 0) placeholders — writing
+                            those as if they were observations poisons the 2D
+                            loss and inflates every hand box.
+    joints_3d_conf  (70,)   the matching confidence column of keypoints_3d
+    hand_box_l/_r   (4,)    tight xyxy over the 21 hand keypoints, full-frame px
+    hand_crop_l/_r  (4,)    the square crop actually written (NaN if skipped)
+    hand_valid_l/_r ()      bool: was a crop written
+
+`--context C` (default 1.2, i.e. today's crop) stores a CONTEXT CROP instead:
+the body crop covers C x the tight box, so the v3 preset can sample loose,
+off-centre framings from real scene rather than black margins. Two keys are
+added, and `bbox_square` keeps meaning the 1.2x square:
+
+    bbox_context    (4,)    the stored square, full-frame px (same int()
+                            rounding as bbox_square)
+    context_padded  ()      bool: that square leaves the frame, so part of the
+                            crop is black frame-edge padding
+
+A non-default --context requires an explicit --output-dir, and the builder
+refuses to add crops of one kind to a folder holding the other, so a context
+corpus can never silently mix with a standard one.
+
+Verified on 200 AIC rows: default output byte-identical to the standard
+crop; the 1.2x window cut back out of a 2.0x / 448 crop
+matches today's 224 crop at 42.2 dB mean (sigma-1 blur, padding masked) with
+a 0.09 px shift. At 2.0x, 195 of 200 AIC squares reach past the frame edge.
+
+`--windows K --window-sizes 224,288` stores PRECOMPUTED WINDOWS instead (the
+v4 preset): K square windows per person, each cut from the full-resolution
+photo with ONE resize -- the same operation as the runtime crop, so the training
+texture is the deployment texture (a 448 px context crop plus a second warp
+was not). Window 0 is the 1.2x square of the tight box
+with the RUNTIME's rounding (floor / ceil, instanthmr/inference.py), i.e. the
+crop the phone cuts for a perfect detector box -- within 1 px of bbox_square,
+whose int() edges the runtime does not use; windows 1..K-1 are v3 framings (side log-uniform in
+0.6-2.0 x the tight box, centre shifted up to +/-15% of the side), padded black
+only where they leave the photo. Each size is written to its own folder
+(--output-dir with a `{size}` placeholder) as one tile per person, K windows
+side by side (K*S x S px). One key is added:
+
+    win_boxes       (K, 4)  the windows, full-frame px, integer; rows 1.. are
+                            exact squares, row 0 is the runtime box (which its
+                            floor / ceil can leave 1 px off square)
+
+The boxes are seeded by the person's name, so every size, rerun and resume
+draws the same ones.
+
+Hand crops are stored UNFLIPPED. SAM3D trains a single right-hand model and
+mirrors the left at inference; flipping a loaded crop is a free numpy slice, so
+baking the mirror into disk would only remove a choice.
+
+    python datasets_pipeline/build_split.py \
+        --split coco_train --annotation-dir $ANN_DIR/coco_train \
+        --image-dir $COCO_IMG_DIR --data-root data
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import re
+import shutil
+import sys
+import zlib
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
+
+from registry import dataset_for_split, image_relpath, output_dir_for_split  # noqa: E402
+from tools.parquet_to_npz import (  # noqa: E402
+    build_annotation, get_square_crop_padded, reproj_error,
+)
+
+# MHR70 keypoint blocks. Index 41 is right_wrist, 62 is left_wrist; each hand
+# block is its 20 finger joints plus that wrist. Taken from JOINT_NAMES in
+# training/train.py.
+RIGHT_HAND_KPS = list(range(21, 42))
+LEFT_HAND_KPS = list(range(42, 63))
+
+ID_RE = re.compile(r"^sa_(\d+)\.jpe?g$", re.I)
+
+
+class ImageIndex:
+    """Resolve a flat `sa_<id>.jpg` to its per-tar subfolder.
+
+    Only needed when a mirror unpacked SA-1B's 1000 distribution tars in place
+    rather than flattening them. Built by index_sa1b.py.
+    """
+
+    def __init__(self, path: Path):
+        z = np.load(path, allow_pickle=True)
+        self.dirs = [str(d) for d in z["dirs"]]
+        self.mode = str(z["mode"])
+        if self.mode == "ranges":
+            self.lo, self.hi, self.folder = z["lo"], z["hi"], z["folder"]
+        else:
+            self.ids, self.folder = z["ids"], z["folder"]
+
+    def resolve(self, image: str) -> str | None:
+        m = ID_RE.match(os.path.basename(image))
+        if not m:
+            return None
+        n = int(m.group(1))
+        if self.mode == "ranges":
+            k = int(np.searchsorted(self.lo, n, side="right")) - 1
+            if k < 0 or n > self.hi[k]:
+                return None
+            return f"{self.dirs[self.folder[k]]}/{image}"
+        k = int(np.searchsorted(self.ids, n))
+        if k >= self.ids.size or self.ids[k] != n:
+            return None
+        return f"{self.dirs[self.folder[k]]}/{image}"
+
+
+
+def hand_boxes(joints_2d: np.ndarray,
+               vis: np.ndarray | None = None) -> dict[str, np.ndarray | None]:
+    """Tight xyxy box over each hand's 21 keypoints, in full-frame pixels.
+
+    Returns None for a hand that is not fully visible. A partially visible hand
+    cannot give a usable box: the invisible keypoints are stored as (0, 0), so
+    including even one drags the box to the image corner. On SA-1B that is the
+    normal case — only 0.3% of hands have all 21 keypoints marked visible.
+    """
+    out: dict[str, np.ndarray | None] = {}
+    for side, idx in (("l", LEFT_HAND_KPS), ("r", RIGHT_HAND_KPS)):
+        if vis is not None and not (vis[idx] > 0).all():
+            out[side] = None
+            continue
+        p = joints_2d[idx]
+        out[side] = np.array([p[:, 0].min(), p[:, 1].min(),
+                              p[:, 0].max(), p[:, 1].max()], dtype=np.float32)
+    return out
+
+
+def square_box(box: np.ndarray, expand: float) -> np.ndarray:
+    cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+    half = max(box[2] - box[0], box[3] - box[1]) * expand / 2.0
+    return np.array([cx - half, cy - half, cx + half, cy + half], dtype=np.float32)
+
+
+def enough_inside(sq: np.ndarray, h: int, w: int, min_frac: float) -> bool:
+    """Reject hands that are mostly outside the frame — the crop would be padding."""
+    ix1, iy1 = max(0.0, sq[0]), max(0.0, sq[1])
+    ix2, iy2 = min(float(w), sq[2]), min(float(h), sq[3])
+    if ix2 <= ix1 or iy2 <= iy1:
+        return False
+    area = (sq[2] - sq[0]) * (sq[3] - sq[1])
+    return ((ix2 - ix1) * (iy2 - iy1)) / max(area, 1e-6) >= min_frac
+
+
+# v3's framing range, as multiples of the tight box (1.2 = the standard crop),
+# and its centre shift as a fraction of the window side.
+WINDOW_BOX = (0.6, 2.0)
+WINDOW_SHIFT = 0.15
+
+
+def window_boxes(tight: np.ndarray, k: int, name: str) -> np.ndarray:
+    """Row 0 is the runtime's 1.2x box of `tight`; rows 1..k-1 are random v3
+    framings, integer and exactly square, in frame px. Seeded by `name`, so
+    reruns agree."""
+    rng = np.random.default_rng(zlib.crc32(name.encode()))
+    x1, y1, x2, y2 = (float(v) for v in tight)
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    b = max(x2 - x1, y2 - y1)
+    # instanthmr.inference.InstantHMR._preprocess, line for line
+    sq_size = b * 1.2
+    sx, sy = cx - sq_size / 2.0, cy - sq_size / 2.0
+    out = [np.array([math.floor(sx), math.floor(sy), math.ceil(sx + sq_size),
+                     math.ceil(sy + sq_size)], dtype=np.float32)]
+    for _ in range(k - 1):
+        m = math.exp(rng.uniform(math.log(WINDOW_BOX[0]), math.log(WINDOW_BOX[1])))
+        side = max(8, int(round(m * b)))
+        wx = cx + rng.uniform(-WINDOW_SHIFT, WINDOW_SHIFT) * side
+        wy = cy + rng.uniform(-WINDOW_SHIFT, WINDOW_SHIFT) * side
+        x1, y1 = int(round(wx - side / 2.0)), int(round(wy - side / 2.0))
+        out.append(np.array([x1, y1, x1 + side, y1 + side], dtype=np.float32))
+    return np.stack(out)
+
+
+def cut_box(img_rgb: np.ndarray, box: np.ndarray) -> np.ndarray:
+    """The integer box `box` of the photo, black-padded where it leaves it."""
+    h, w = img_rgb.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in box)
+    crop = img_rgb[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+    return cv2.copyMakeBorder(crop, max(0, -y1), max(0, y2 - h), max(0, -x1),
+                              max(0, x2 - w), cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
+
+def write_crop(img_rgb, box, size, path: Path) -> None:
+    crop, _ = get_square_crop_padded(img_rgb, box, expand=1.0)
+    crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)
+    cv2.imwrite(str(path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
+
+
+def place_original(src: Path, dst: Path, mode: str) -> None:
+    if mode == "none" or dst.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if mode == "copy":
+        shutil.copy2(src, dst)
+    elif mode == "link":
+        os.symlink(os.path.relpath(src.resolve(), dst.parent), dst)
+    elif mode == "hardlink":
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--split", required=True, help="e.g. coco_train, harmony4d_train")
+    p.add_argument("--annotation-dir", required=True, type=Path)
+    p.add_argument("--image-dir", required=True, type=Path,
+                   help="root the parquet `image` paths are relative to")
+    p.add_argument("--data-root", type=Path, default=Path("data"))
+    p.add_argument("--output-dir", type=Path, default=None,
+                   help="override the sam3d_gt_<dataset> destination")
+
+    p.add_argument("--body-size", type=int, default=224)
+    p.add_argument("--context", type=float, default=1.2,
+                   help="side of the stored body crop as a multiple of the tight "
+                        "person box. 1.2 (default) is today's crop, byte for byte. "
+                        "Anything else writes a context crop and records its square "
+                        "as bbox_context (full-frame px) plus context_padded; "
+                        "bbox_square stays the 1.2x square, so the standard window "
+                        "can always be cut back out.")
+    p.add_argument("--windows", type=int, default=0, metavar="K",
+                   help="store K precomputed windows per person (window 0 = the "
+                        "standard 1.2x crop, 1..K-1 = v3 framings), each cut from "
+                        "the photo with one resize. Needs --window-sizes, "
+                        "--no-hands and an --output-dir containing {size}.")
+    p.add_argument("--window-sizes", default="224,288",
+                   help="with --windows: comma-separated tile sizes, one folder each")
+    p.add_argument("--crop-format", choices=("png", "jpg"), default="png",
+                   help="png keeps body_crops byte-identical to the existing "
+                        "data/ tree; jpg is ~5x smaller and ~4x faster to decode")
+    p.add_argument("--jpg-quality", type=int, default=95)
+
+    p.add_argument("--hands", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--hand-size", type=int, default=224)
+    p.add_argument("--hand-expand", type=float, default=2.0,
+                   help="square hand box = 21-keypoint span x this. 2.0 leaves "
+                        "room to jitter the box inside the stored crop at "
+                        "train time, which is what makes the model tolerant of "
+                        "a real detector's boxes.")
+    p.add_argument("--hand-min-px", type=float, default=64.0,
+                   help="skip hands whose SPAN (before --hand-expand) is smaller "
+                        "than this in source pixels. 64 is SAM3D's own gate.")
+    p.add_argument("--hand-min-inside", type=float, default=0.6,
+                   help="skip hands whose square crop is less than this fraction "
+                        "inside the frame")
+
+    p.add_argument("--originals", choices=("copy", "link", "hardlink", "none"),
+                   default="copy",
+                   help="copy: self-contained, prunes unreferenced source images. "
+                        "link/hardlink: free, but the source root must survive.")
+
+    p.add_argument("--image-index", type=Path, default=None,
+                   help="npz from index_sa1b.py, for a SA-1B mirror that kept "
+                        "the per-tar sa_NNNNNN/ folders instead of a flat tree")
+    p.add_argument("--shard-slice", default=None, metavar="I/N",
+                   help="process only shard I of N (0-based) — for a Slurm job "
+                        "array. Resume-safety makes overlap harmless, but a "
+                        "clean split avoids duplicated decoding.")
+    p.add_argument("--image-prefix", default=None,
+                   help="only rows whose `image` starts with this — the hook "
+                        "stream_archives.py uses to build one archive at a time")
+    p.add_argument("--max-samples", type=int, default=None)
+    p.add_argument("--keep-invalid", action="store_true",
+                   help="keep rows with mhr_valid == False (dropped by default)")
+    p.add_argument("--validate", action="store_true",
+                   help="assert < --reproj-tol px reprojection error per person")
+    p.add_argument("--reproj-tol", type=float, default=1.0)
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    ds = dataset_for_split(args.split)
+    out_dir = args.output_dir or output_dir_for_split(args.split, args.data_root)
+
+    # A context build must never land in (or resume into) a folder of the
+    # other kind: the skip-existing logic below would silently yield a corpus
+    # of mixed 224 crops and context crops. Checked before anything is created.
+    if args.context != 1.2 and args.output_dir is None:
+        sys.exit(f"--context {args.context} needs an explicit --output-dir, so the "
+                 f"context crops never land in the standard {out_dir.name}")
+    win_sizes = [int(v) for v in args.window_sizes.split(",")] if args.windows else []
+    if args.windows:
+        if args.windows < 2 or args.context != 1.2 or args.hands:
+            sys.exit("--windows needs K >= 2, the default --context and --no-hands")
+        if args.output_dir is None or "{size}" not in str(args.output_dir):
+            sys.exit("--windows needs an --output-dir containing {size}, e.g. "
+                     "data_win{size}/sam3d_gt_aic")
+        out_dirs = [Path(str(args.output_dir).format(size=s)) for s in win_sizes]
+    else:
+        out_dirs = [out_dir]
+    out_dir = out_dirs[0]
+    kind = "windows" if args.windows else "context" if args.context != 1.2 else "standard"
+    for d in out_dirs:
+        first = next((d / "annotations").glob("*.npz"), None)
+        if first is not None:
+            with np.load(first) as z:
+                was = ("windows" if "win_boxes" in z.files else
+                       "context" if "bbox_context" in z.files else "standard")
+            if was != kind:
+                sys.exit(f"{d} already holds {was} crops; refusing to add {kind} ones")
+
+    for d in out_dirs:
+        for k in ("original_images", "annotations", "body_crops", "hands_crops"):
+            if k == "original_images" and (args.originals == "none" or d != out_dir):
+                continue
+            if k == "hands_crops" and not args.hands:
+                continue
+            (d / k).mkdir(parents=True, exist_ok=True)
+
+        # Let the unmodified training script discover this folder.
+        compat = d / "images"
+        if not compat.exists():
+            try:
+                os.symlink("body_crops", compat)
+            except FileExistsError:
+                pass  # another array task won the race
+    dirs = {k: out_dir / k for k in
+            ("original_images", "annotations", "body_crops", "hands_crops")}
+
+    parquets = sorted(args.annotation_dir.glob("*.parquet"))
+    if not parquets:
+        sys.exit(f"no parquet files in {args.annotation_dir}")
+    if args.shard_slice:
+        i, n = (int(x) for x in args.shard_slice.split("/"))
+        if not 0 <= i < n:
+            sys.exit(f"--shard-slice {args.shard_slice}: need 0 <= I < N")
+        parquets = parquets[i::n]
+        print(f"shard slice {i}/{n}: {len(parquets)} parquet file(s)")
+
+    index = ImageIndex(args.image_index) if args.image_index else None
+    if index:
+        print(f"image index: {len(index.dirs)} folders, mode={index.mode}")
+
+    ext = args.crop_format
+    imwrite_params = ([int(cv2.IMWRITE_JPEG_QUALITY), args.jpg_quality]
+                      if ext == "jpg" else [])
+    # The last folder's npz is written last, so it marks a finished person.
+    existing = {p.stem for p in (out_dirs[-1] / "annotations").glob("*.npz")}
+    total = len(existing)
+    st = {k: 0 for k in ("crops", "hands_l", "hands_r", "hand_too_small",
+                         "hand_out_of_frame", "hand_occluded", "skipped_existing",
+                         "skipped_invalid", "skipped_prefix", "missing_image",
+                         "failed")}
+
+    pbar = tqdm(parquets, desc=f"{args.split} shards", unit="shard")
+    for pq_path in pbar:
+        df = pd.read_parquet(pq_path)
+        img_cache: dict[str, np.ndarray | None] = {}
+
+        for _, row in df.iterrows():
+            dataset, image = row["dataset"], row["image"]
+            if args.image_prefix and not image.startswith(args.image_prefix):
+                st["skipped_prefix"] += 1
+                continue
+
+            stem = (os.path.splitext(image)[0]
+                    .replace("/", "_").replace(os.sep, "_").replace(" ", "_"))
+            name = f"{dataset}_{stem}_p{int(row['person_id'])}"
+            if name in existing:
+                st["skipped_existing"] += 1
+                # Still place the original: a resume with a different
+                # --originals must be able to backfill original_images/,
+                # otherwise a split built with `none` can never gain them.
+                if args.originals != "none":
+                    rp = image_relpath(dataset, image)
+                    if index is not None:
+                        rp = index.resolve(image) or rp
+                    place_original(args.image_dir / rp,
+                                   dirs["original_images"] / rp, args.originals)
+                continue
+            if not args.keep_invalid and not bool(row["mhr_valid"]):
+                st["skipped_invalid"] += 1
+                continue
+
+            relpath = image_relpath(dataset, image)
+            if index is not None:
+                resolved = index.resolve(image)
+                if resolved is None:
+                    st["missing_image"] += 1
+                    continue
+                relpath = resolved
+            if image not in img_cache:
+                # Bounded: a parquet shard's rows for one photo are adjacent, so
+                # a few entries keep every photo decoded once. Unbounded, the
+                # cache held every decoded frame of the shard -- ~10 MB each on
+                # SA-1B -- and 10 builder processes per job ran out of memory
+                # after ~40 min.
+                if len(img_cache) >= 8:
+                    img_cache.clear()
+                bgr = cv2.imread(str(args.image_dir / relpath))
+                img_cache[image] = (cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                                    if bgr is not None else None)
+            img_rgb = img_cache[image]
+            if img_rgb is None:
+                st["missing_image"] += 1
+                continue
+
+            h, w = img_rgb.shape[:2]
+            try:
+                ann = build_annotation(row, h, w)
+                if args.validate:
+                    err = reproj_error(ann["joints_3d"], ann["cam_trans"],
+                                       ann["joints_2d"], ann["cam_focal_length"],
+                                       ann["orig_shape"])
+                    if err > args.reproj_tol:
+                        raise ValueError(f"reproj err {err:.2f}px > {args.reproj_tol}px")
+
+                body_crop, sq_bbox = get_square_crop_padded(img_rgb, ann["bbox"],
+                                                            expand=1.2)
+                if args.context != 1.2:
+                    body_crop, ctx_bbox = get_square_crop_padded(
+                        img_rgb, ann["bbox"], expand=args.context)
+                    ann["bbox_context"] = ctx_bbox
+                    ann["context_padded"] = np.array(
+                        bool(ctx_bbox[0] < 0 or ctx_bbox[1] < 0
+                             or ctx_bbox[2] > w or ctx_bbox[3] > h))
+                if args.windows:
+                    ann["win_boxes"] = window_boxes(ann["bbox"], args.windows, name)
+                    crops = [cut_box(img_rgb, b) for b in ann["win_boxes"]]
+                    tiles = [np.hstack([cv2.resize(c, (s, s), interpolation=cv2.INTER_LINEAR)
+                                        for c in crops]) for s in win_sizes]
+                else:
+                    tiles = [cv2.resize(body_crop, (args.body_size, args.body_size),
+                                        interpolation=cv2.INTER_LINEAR)]
+                for d, tile in zip(out_dirs, tiles):
+                    cv2.imwrite(str(d / "body_crops" / f"{name}.{ext}"),
+                                cv2.cvtColor(tile, cv2.COLOR_RGB2BGR),
+                                imwrite_params)
+
+                ann["bbox_square"] = sq_bbox
+                ann["image_relpath"] = relpath
+                ann["dataset"] = dataset
+                kp2 = np.asarray(row["keypoints_2d"].tolist(), dtype=np.float32)
+                kp3 = np.asarray(row["keypoints_3d"].tolist(), dtype=np.float32)
+                vis = kp2.reshape(-1, 3)[:, 2].copy()
+                ann["joints_2d_vis"] = vis
+                ann["joints_3d_conf"] = kp3.reshape(-1, 4)[:, 3].copy()
+
+                boxes = hand_boxes(ann["joints_2d"], vis)
+                for side in ("l", "r"):
+                    tight = boxes[side]
+                    nan4 = np.full(4, np.nan, dtype=np.float32)
+                    ann[f"hand_box_{side}"] = tight if tight is not None else nan4
+                    ann[f"hand_crop_{side}"] = nan4
+                    ann[f"hand_valid_{side}"] = np.array(False)
+                    if tight is None:
+                        st["hand_occluded"] += 1
+                        continue
+                    span = max(tight[2] - tight[0], tight[3] - tight[1])
+                    sq = square_box(tight, args.hand_expand)
+                    if not args.hands:
+                        continue
+                    if span < args.hand_min_px:
+                        st["hand_too_small"] += 1
+                        continue
+                    if not enough_inside(sq, h, w, args.hand_min_inside):
+                        st["hand_out_of_frame"] += 1
+                        continue
+                    write_crop(img_rgb, sq, args.hand_size,
+                               dirs["hands_crops"] / f"{name}_{side}.{ext}")
+                    ann[f"hand_crop_{side}"] = sq
+                    ann[f"hand_valid_{side}"] = np.array(True)
+                    st[f"hands_{side}"] += 1
+
+                for d in out_dirs:
+                    np.savez(d / "annotations" / f"{name}.npz", **ann)
+                if args.originals != "none":
+                    place_original(args.image_dir / relpath,
+                                   dirs["original_images"] / relpath,
+                                   args.originals)
+            except Exception as e:  # noqa: BLE001
+                st["failed"] += 1
+                tqdm.write(f"[fail] {name}: {e}")
+                continue
+
+            existing.add(name)
+            st["crops"] += 1
+            total += 1
+            if args.max_samples and total >= args.max_samples:
+                pbar.close()
+                report(st, total, out_dir)
+                return
+
+        pbar.set_postfix(crops=st["crops"], hands=st["hands_l"] + st["hands_r"],
+                         missing=st["missing_image"])
+
+    report(st, total, out_dir)
+
+
+def report(st: dict, total: int, out_dir: Path) -> None:
+    print("=" * 62)
+    print(f"BUILD COMPLETE -> {out_dir}")
+    for k, v in st.items():
+        print(f"  {k:20s}: {v:,}")
+    print(f"  {'total on disk':20s}: {total:,}")
+    print("=" * 62)
+
+
+if __name__ == "__main__":
+    main()
