@@ -12,9 +12,10 @@ export const PIPELINE = {
 };
 
 /** Apply the project-wide renderer settings. Keep the preview and the game identical so swatch tests match. */
-export function configureRenderer(renderer, { shadows = true } = {}) {
+export function configureRenderer(renderer, { shadows = true, postToneMapping = false } = {}) {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = PIPELINE.toneMapping;
+  // with the post chain (render/post.js) tone mapping runs as an effect on the HDR buffer instead
+  renderer.toneMapping = postToneMapping ? THREE.NoToneMapping : PIPELINE.toneMapping;
   renderer.toneMappingExposure = PIPELINE.exposure;
   if (shadows) {
     renderer.shadowMap.enabled = true;
@@ -28,12 +29,13 @@ export function configureRenderer(renderer, { shadows = true } = {}) {
  * viewport emulation innerWidth can disagree with the laid-out canvas, which rendered the preview
  * off-centre. Returns a disposer.
  */
-export function autoResize(renderer, camera, { onResize } = {}) {
+export function autoResize(renderer, camera, { onResize, pixelRatio = null } = {}) {
   const canvas = renderer.domElement;
   const apply = () => {
     const w = Math.max(1, Math.round(canvas.clientWidth || innerWidth));
     const h = Math.max(1, Math.round(canvas.clientHeight || innerHeight));
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    // pixelRatio(): quality presets / dynamic resolution (render/quality.js); default = device DPR capped at 2
+    renderer.setPixelRatio(pixelRatio ? pixelRatio() : Math.min(devicePixelRatio, 2));
     renderer.setSize(w, h, false); // CSS size is owned by the stylesheet (fixed, inset 0)
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
@@ -43,5 +45,7 @@ export function autoResize(renderer, camera, { onResize } = {}) {
   ro.observe(canvas);
   addEventListener('resize', apply);
   apply();
-  return () => { ro.disconnect(); removeEventListener('resize', apply); };
+  const dispose = () => { ro.disconnect(); removeEventListener('resize', apply); };
+  dispose.apply = apply; // re-run after a pixel-ratio change
+  return dispose;
 }

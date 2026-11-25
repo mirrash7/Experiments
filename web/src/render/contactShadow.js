@@ -52,13 +52,14 @@ export function createContactShadow({ radius = 0.42, opacity = 0.35, groundY = 0
       B.hips.getWorldPosition(_hips);
       B.leftFoot.getWorldPosition(_l);
       B.rightFoot.getWorldPosition(_r);
-      const footY = Math.min(_l.y, _r.y) - 0.07; // ankle height above sole
+      const footY = Math.min(_l.y, _r.y) - (hero.info?.ankleHeight ?? 0.07); // ankle height above sole (per model)
       const lift = Math.max(0, footY - groundY);
       const cx = _hips.x * 0.6 + (_l.x + _r.x) * 0.2, cz = _hips.z * 0.6 + (_l.z + _r.z) * 0.2;
       mesh.position.set(cx, groundY, cz);
       const spread = Math.min(0.5, Math.hypot(_l.x - _r.x, _l.z - _r.z) * 0.5);
       const k = 1 / (1 + lift * 2.5);
-      mesh.scale.set((radius + spread * 0.6) * k, (radius + spread * 0.25) * k, 1);
+      const r = radius * (hero.info?.height ? hero.info.height / 1.75 : 1);
+      mesh.scale.set((r + spread * 0.6) * k, (r + spread * 0.25) * k, 1);
       mat.opacity = opacity * k;
     },
     dispose() { mesh.geometry.dispose(); mat.dispose(); tex.dispose(); mesh.removeFromParent(); },

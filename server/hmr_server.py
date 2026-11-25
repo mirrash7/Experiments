@@ -4,10 +4,20 @@
 Protocol (ws://127.0.0.1:8791):
   client -> server  binary: 4-byte little-endian uint32 frame id + JPEG bytes
   client -> server  text:   {"type":"ping","t":n} -> {"type":"pong","t":n}; {"type":"config",...} is ignored
-  server -> client  text:   {"type":"hello","model":..,"joints":70} on connect
-                            {"type":"pose","id","w","h","persons":[{"j3d","j2d","conf","box"}],"timing":{..},"model"}
+  server -> client  text:   {"type":"hello","model":..,"joints":70,"protocol":2,"fields":[..]} on connect
+                            {"type":"pose","id","w","h","persons":[PERSON],"timing":{..},"model","t_server"}
+  PERSON (protocol 2; the protocol-1 fields j3d/j2d/conf/box are unchanged):
+    j3d    [[x,y,z]]x70  keypoints, metres, camera frame (x right, y down, z forward) = j3d_local + cam_t
+    j2d    [[u,v]]x70    pixels                 conf  detector score 0..1        box  [x1,y1,x2,y2] px
+    mhr    [204]         MHR model parameters after the server pose filter: 0:3 root translation (x10 cm),
+                         3:6 root rotation, 6:136 joint angles (rad), 136:204 skeleton scales (log2)
+    shape  [45]          MHR identity (blend-shape) coefficients
+    cam_t  [x,y,z]       camera translation of the body-centred MHR output, metres, camera frame
+    focal  f             focal length in pixels the 3D is expressed in
+  Joint positions from MHR forward kinematics of `mhr` (web/public/motion/mhr-rig.json, see mhr_fk.py) in camera
+  axes plus cam_t reproduce the joint-readout keypoints of j3d exactly (shoulders, hips, knees, wrists, fingers).
 Inference runs in one worker thread; only the newest pending frame of a connection is processed (older ones are
-dropped).
+dropped). The server keeps no per-client state beyond tracking, so clients can reconnect after a restart.
 """
 from __future__ import annotations
 
@@ -43,6 +53,21 @@ COREML_MLPROGRAM = {"ModelFormat": "MLProgram", "MLComputeUnits": "CPUAndGPU"}
 
 def r4(a: np.ndarray) -> list:
     return np.round(np.asarray(a, np.float64), 4).tolist()
+
+
+def r5(a: np.ndarray) -> list:
+    return np.round(np.asarray(a, np.float64), 5).tolist()
+
+
+PROTOCOL = 2
+PERSON_FIELDS = ["j3d", "j2d", "conf", "box", "mhr", "shape", "cam_t", "focal"]
+
+
+def person_json(p) -> dict:
+    """One tracked person as sent to the client (see the module docstring)."""
+    return {"j3d": r4(p.joints_3d_cam), "j2d": r1(p.joints_2d), "conf": round(float(p.confidence), 4),
+            "box": r1(p.bbox), "mhr": r5(p.mhr_params), "shape": r4(p.shape_params), "cam_t": r4(p.cam_trans),
+            "focal": round(float(p.focal_length), 2)}
 
 
 def r1(a: np.ndarray) -> list:
@@ -170,13 +195,13 @@ class HMRServer:
         h, w = rgb.shape[:2]
         persons = sorted(res.persons, key=lambda p: float((p.bbox[2] - p.bbox[0]) * (p.bbox[3] - p.bbox[1])),
                          reverse=True)
-        out = [{"j3d": r4(p.joints_3d_cam), "j2d": r1(p.joints_2d), "conf": round(float(p.confidence), 4),
-                "box": r1(p.bbox)} for p in persons]
+        out = [person_json(p) for p in persons]
         t2 = time.perf_counter()
         timing = {"decode": round((t1 - t0) * 1000, 2), "detect": round(res.detector_ms, 2),
                   "hmr": round(res.hmr_ms, 2), "total": round((t2 - t0) * 1000, 2)}
         msg = json.dumps({"type": "pose", "id": fid, "w": w, "h": h, "persons": out, "timing": timing,
-                          "model": self.model_name}, separators=(",", ":"))
+                          "model": self.model_name, "t_server": round(time.time() * 1000, 1)},
+                         separators=(",", ":"))
         return msg, len(out), timing
 
     def _reset_tracking(self):
@@ -196,7 +221,8 @@ class HMRServer:
         log.info("client connected %s", peer)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(self.executor, self._reset_tracking)
-        await ws.send(json.dumps({"type": "hello", "model": self.model_name, "joints": 70}))
+        await ws.send(json.dumps({"type": "hello", "model": self.model_name, "joints": 70,
+                                  "protocol": PROTOCOL, "fields": PERSON_FIELDS}))
 
         latest: list = [None]          # (id, jpeg, t_received), overwritten by newer frames
         wake = asyncio.Event()

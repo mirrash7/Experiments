@@ -22,16 +22,32 @@ The vendor repo has no `setup.py`, so `hmr_server.py` imports `instanthmr` by ad
 
 - Client -> server, binary: 4-byte little-endian uint32 `id` followed by the JPEG bytes.
 - Client -> server, text: `{"type":"ping","t":n}` gets the reply `{"type":"pong","t":n}`. The server ignores `{"type":"config",...}` and any other text.
-- Server -> client on connect: `{"type":"hello","model":"small fit1 coreml-mlprogram","joints":70}`.
+- Server -> client on connect: `{"type":"hello","model":"small fit1 coreml-mlprogram","joints":70,"protocol":2,"fields":[...]}`.
 - Server -> client for each processed frame:
   `{"type":"pose","id","w","h","persons":[{"j3d":[[x,y,z]x70],"j2d":[[u,v]x70],"conf","box":[x1,y1,x2,y2]}],"timing":{"decode","detect","hmr","total"},"model"}`.
   `j3d` is in metres in the camera frame (x right, y down, z forward), rounded to 4 decimals. `j2d` and `box` are in pixels, rounded to 1 decimal.
+  Protocol 2 adds per person (old fields unchanged, about 3.5 KB per person in total) and `t_server` (ms epoch) per message:
+  - `mhr` [204]: MHR model parameters after the server pose filter (5 decimals): 0:3 root translation (x10 cm),
+    3:6 root rotation, 6:136 joint angles (rad, Euler XYZ per joint through the rig's parameter transform), 136:204 skeleton scales.
+  - `shape` [45]: MHR identity coefficients. `cam_t` [3]: camera translation (m, camera frame). `focal`: focal length (px).
+  - MHR forward kinematics of `mhr` (`mhr_fk.py`, rig constants in `web/public/motion/mhr-rig.json`) converted to camera
+    axes plus `cam_t` reproduces the joint-readout keypoints of `j3d` (shoulders, hips, knees, wrists, all finger joints,
+    neck) to the 0.1 mm rounding; `test_server.py` checks the rig against `mhr-body.onnx`.
   Persons are sorted by box area, largest first (`--max-persons 1` by default). `timing.total` is the worker's time for
   decode + detect + HMR + JSON. If a frame cannot be processed, the reply has an empty `persons` list and an extra
   `"error"` field.
 - Only the newest frame is processed. Frames that arrive while the worker is busy replace the pending one, and the
   older frames never get a reply. Inference runs in a single worker thread, so the event loop is never blocked.
-- Each new connection resets the detector-stride tracking and the pose filter.
+- Each new connection resets the detector-stride tracking and the pose filter. The server holds no other client state,
+  so after a restart clients simply reconnect (`HMRSource` retries every 1-5 s by itself).
+
+## Tests and tools
+
+```bash
+.venv/bin/python -m unittest test_server -v     # offline: MHR FK rig vs mhr-body.onnx, protocol-2 person message
+.venv/bin/python tools/record_clip.py           # demo GIF -> web/public/motion/clips/demo-hmr.json (server must run)
+python tools/extract_mhr_rig.py --rig mhr_model.pt   # needs torch; regenerates web/public/motion/mhr-rig.json
+```
 
 ## Devices
 

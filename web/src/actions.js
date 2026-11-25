@@ -1,12 +1,37 @@
 // Gesture / action triggers — the hooks a Kinect-style game will listen to.
-// Works on the player-space pose (mirrored if mirror mode is on, so "left" is the avatar's left).
+// Works on the player-space pose (the player's own left/right; map to avatar sides yourself in mirror mode).
 //
-//   const det = new ActionDetector(); det.on((name, info) => ...); det.update(joints, conf, tMs, calibHip)
+//   const det = new ActionDetector(); det.on((name, info) => ...); det.update(joints, conf, tCapture)
+//   det.pushFrame(frame)   // same, through the built-in LIGHT one-euro filter (high cutoff: fires earlier than
+//                          // a heavily smoothed stream; this is what the motion pipeline uses)
 //
 // Continuous states (held poses) fire once on entry; impulses (punch, jump, kick) fire on motion and then
 // cool down. Every event carries `latencyRef` = the camera capture time of the frame that triggered it.
 import * as THREE from 'three';
 import { midpoint } from './pose.js';
+
+/** Light one-euro on joint positions for the action stream: removes keypoint noise, adds only a few ms of lag. */
+export class LightPoseFilter {
+  constructor({ minCutoff = 5, beta = 3, dCutoff = 1.5 } = {}) {
+    Object.assign(this, { minCutoff, beta, dCutoff });
+    this.s = {};
+  }
+  reset() { this.s = {}; }
+  apply(joints, tMs) {
+    const out = {};
+    for (const [name, v] of Object.entries(joints)) {
+      if (!v) continue;
+      let st = this.s[name];
+      if (!st || tMs <= st.t) { st = this.s[name] = { x: v.clone(), dx: new THREE.Vector3(), t: tMs }; out[name] = v.clone(); continue; }
+      const dt = Math.max(1e-3, (tMs - st.t) / 1000); st.t = tMs;
+      const a = (c) => 1 / (1 + 1 / (2 * Math.PI * c * dt));
+      st.dx.lerp(v.clone().sub(st.x).divideScalar(dt), a(this.dCutoff));
+      st.x.lerp(v, a(this.minCutoff + this.beta * st.dx.length()));
+      out[name] = st.x.clone();
+    }
+    return out;
+  }
+}
 
 export const ACTIONS = {
   jump: { label: 'JUMP', kind: 'impulse', color: '#ffd23f' },
@@ -18,6 +43,7 @@ export const ACTIONS = {
   leftHandUp: { label: 'LEFT HAND UP', kind: 'state', color: '#7bed9f' },
   rightHandUp: { label: 'RIGHT HAND UP', kind: 'state', color: '#7bed9f' },
   handsUp: { label: 'HANDS UP', kind: 'state', color: '#2ed573' },
+  guard: { label: 'GUARD', kind: 'state', color: '#70a1ff' },
   tPose: { label: 'T-POSE', kind: 'state', color: '#a29bfe' },
   leanLeft: { label: 'LEAN LEFT', kind: 'state', color: '#f8a5c2' },
   leanRight: { label: 'LEAN RIGHT', kind: 'state', color: '#f8a5c2' },
@@ -34,9 +60,16 @@ export class ActionDetector {
     this.calib = null;
     this._calibSamples = [];
     this.sensitivity = 1.0;
+    this.filter = new LightPoseFilter();
+    this._prevExt = {};
+  }
+  /** Feed a source PoseFrame through the light filter (player-space joints). */
+  pushFrame(frame) {
+    if (!frame?.joints) return;
+    this.update(this.filter.apply(frame.joints, frame.tCapture), frame.conf, frame.tCapture);
   }
   on(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
-  recalibrate() { this.calib = null; this._calibSamples = []; }
+  recalibrate() { this.calib = null; this._calibSamples = []; this.hist = []; this.filter?.reset(); }
 
   _fire(name, t, extra = {}) {
     this.lastFire[name] = t;
@@ -47,10 +80,10 @@ export class ActionDetector {
     this.state[name] = active;
     if (active && !was) this._fire(name, t, { tCapture });
   }
-  _impulse(name, cond, t, tCapture, cooldown = 450) {
+  _impulse(name, cond, t, tCapture, cooldown = 450, extra = {}) {
     const ok = cond && (t - (this.lastFire[name] ?? -1e9)) > cooldown;
     this.state[name] = cond;
-    if (ok) this._fire(name, t, { tCapture });
+    if (ok) this._fire(name, t, { tCapture, ...extra });
   }
 
   update(J, conf, tCapture) {
@@ -74,7 +107,7 @@ export class ActionDetector {
     }
 
     this.hist.push({ t: tCapture, J });
-    while (this.hist.length > 2 && tCapture - this.hist[0].t > 160) this.hist.shift();
+    while (this.hist.length > 2 && tCapture - this.hist[1].t >= 60) this.hist.shift();
     const old = this.hist[0];
     const dt = Math.max(0.016, (tCapture - old.t) / 1000);
     const vel = (name) => (J[name] && old.J[name] ? J[name].clone().sub(old.J[name]).divideScalar(dt) : new THREE.Vector3());
@@ -95,6 +128,13 @@ export class ActionDetector {
     };
     this._setState('tPose', armOut('left') && armOut('right'), t, tCapture);
 
+    // Guard: both fists up near the face, in front of the body (held)
+    const nearFace = (side) => {
+      const W = J[side + 'Wrist'], S = J[side + 'Shoulder'];
+      return ok(side + 'Wrist', side + 'Shoulder') && J.nose && W.distanceTo(J.nose) < 0.8 * ruler && W.y > S.y - 0.1 * ruler && W.z > S.z + 0.1 * ruler;
+    };
+    this._setState('guard', nearFace('left') && nearFace('right') && !lUp && !rUp, t, tCapture);
+
     // Punches: fast, extending arm
     for (const side of ['left', 'right']) {
       const S = J[side + 'Shoulder'], E = J[side + 'Elbow'], W = J[side + 'Wrist'];
@@ -104,7 +144,12 @@ export class ActionDetector {
       const away = W.clone().sub(S).normalize();
       const speedOut = v.dot(away);
       const name = side === 'left' ? 'punchLeft' : 'punchRight';
-      this._impulse(name, ext > 0.86 && speedOut > 1.6 / s && W.y > hip.y + 0.2 * ruler, t, tCapture, 350);
+      const rising = ext - (this._prevExt[side] ?? ext) > 0.01;
+      this._prevExt[side] = ext;
+      // fire on the way out: a fast extension that is already most of the way there, or a near-straight arm
+      const early = ext > 0.72 && rising && speedOut > 2.4 / s;
+      const late = ext > 0.86 && speedOut > 1.6 / s;
+      this._impulse(name, (early || late) && W.y > hip.y + 0.2 * ruler, t, tCapture, 350, { side, speed: speedOut, ext });
     }
 
     // Lower body

@@ -147,3 +147,29 @@ export function setKeyLightAngle(hero, yaw, pitch = KEY_LIGHT_DEFAULT.pitch) {
   }
   return via;
 }
+
+// ------------------------------------------------------------------------------------------------
+// VRM hero (vrm/hero.js): wireframe / outline toggles live on hero.materials (mtoonTuning.js) because MToon
+// outlines are a second material group on the same mesh, not separate `_outline` meshes. This counts the
+// hero's main-pass draws (one per visible material group) and triangles.
+// ------------------------------------------------------------------------------------------------
+export function heroRenderStats(hero) {
+  let draws = 0, outlineDraws = 0, tris = 0, meshes = 0, shadowDraws = 0;
+  hero.root.traverse((m) => {
+    if (!m.isMesh || !isVisibleChain(m)) return;
+    meshes++;
+    const g = m.geometry;
+    const n = g.index ? g.index.count : g.attributes.position?.count || 0;
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    const groups = Array.isArray(m.material) && g.groups.length ? g.groups : [{ materialIndex: 0, count: n }];
+    for (const gr of groups) {
+      const mat = mats[gr.materialIndex ?? 0];
+      if (!mat || !mat.visible) continue;
+      draws++;
+      if (mat.isOutline || mat.userData?.isOutline) outlineDraws++;
+      else tris += Math.round(Math.min(gr.count ?? n, n) / 3);
+      if (m.castShadow) shadowDraws++;
+    }
+  });
+  return { meshes, draws, outlineDraws, shadowDraws, tris };
+}
