@@ -13,6 +13,7 @@ import { RecordedSource, Recorder } from '../sources/recordedSource.js';
 import { HMRSource } from '../sources/hmrSource.js';
 import { Camera } from '../sources/camera.js';
 import { createFx } from '../fx/index.js';
+import { runTriggerTest, formatTriggerTest } from './triggerTest.js';
 
 const $ = (id) => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
@@ -269,7 +270,7 @@ function step(dt) {
 
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
 
-const lab = { events: [], THREE, step, setSource, cam, controls, get vrm() { return vrm; }, get source() { return source; } };
+const lab = { events: [], THREE, step, setSource, cam, controls, triggerTest: (o) => { const r = runTriggerTest(o); r.text = formatTriggerTest(r); return r; }, get vrm() { return vrm; }, get source() { return source; } };
 /** Automation: run a source for `ms` with a fixed 60 Hz update loop (works with the tab hidden), return metrics. */
 lab.measure = async (name, ms = 8000, opts = {}, warm = 2500) => {
   lab.manual = true;
@@ -283,6 +284,55 @@ lab.measure = async (name, ms = 8000, opts = {}, warm = 2500) => {
   clearInterval(id);
   lab.manual = false;
   return { ...pipeline.metrics.snapshot(), events: lab.events.map((e) => e.name), solver: pipeline.state.solver };
+};
+/**
+ * Punch path probe (QA v3 r2 P1-2): lock the synthetic jab/cross, and per punch compare the avatar's
+ * shoulder->fist direction at its peak extension with the tracked (input) shoulder->wrist direction at the raw
+ * peak (both in hero/avatar space, mirrored). Returns per-punch yaw off straight-forward and the 3D angle error.
+ */
+lab.punchProbe = async (ms = 6000, opts = {}) => {
+  lab.manual = true;
+  await setSource('synthetic');
+  source.phase = 1;
+  Object.assign(pipeline.options, opts);
+  const rec = { left: [], right: [] };
+  let last = performance.now();
+  const id = setInterval(() => {
+    const n = performance.now(); step((n - last) / 1000); last = n;
+    const fk = pipeline.state.heroFK, smp = pipeline.lastSample;
+    if (!fk || !smp || !pipeline.state.calibrated) return;
+    for (const s of ['left', 'right']) {
+      const sh = fk.pos[s + 'UpperArm'], hd = fk.pos[s + 'Hand'];
+      const rs = smp.pts[s + 'Shoulder'], rw = smp.pts[s + 'Wrist'];
+      if (!sh || !hd || !rs || !rw) continue;
+      rec[s].push({ t: n, out: hd.clone().sub(sh), raw: rw.clone().sub(rs) });
+    }
+  }, 1000 / 60);
+  await new Promise((r) => setTimeout(r, ms));
+  clearInterval(id); lab.manual = false;
+  const deg = (r) => r * 180 / Math.PI;
+  const yaw = (v, sg) => deg(Math.atan2(-sg * v.x, v.z));          // + = across the body (toward the midline)
+  const res = [];
+  for (const s of ['left', 'right']) {
+    const sg = s === 'left' ? 1 : -1, a = rec[s];
+    // segment punches: frames where the raw arm is extended forward (z > 60 % of the arm)
+    let i = 0;
+    while (i < a.length) {
+      if (a[i].raw.z < 0.4) { i++; continue; }
+      let j = i; while (j < a.length && a[j].t - a[i].t < 400) j++;
+      const win = a.slice(Math.max(0, i - 3), j);
+      const pr = win.reduce((b, x) => (x.raw.length() > b.raw.length() ? x : b));
+      const po = win.reduce((b, x) => (x.out.z > b.out.z ? x : b));
+      res.push({ side: s, inYaw: +yaw(pr.raw, sg).toFixed(1), outYaw: +yaw(po.out, sg).toFixed(1),
+        err3d: +deg(po.out.angleTo(pr.raw)).toFixed(1), outFwdDeg: +deg(po.out.angleTo(new THREE.Vector3(0, 0, 1))).toFixed(1) });
+      i = j + 5;
+      while (i < a.length && a[i].raw.z >= 0.4) i++;
+    }
+  }
+  const mean = (k) => +(res.reduce((s, x) => s + Math.abs(x[k]), 0) / Math.max(1, res.length)).toFixed(1);
+  const max = (k) => Math.max(...res.map((x) => Math.abs(x[k])));
+  source.phase = null;
+  return { n: res.length, meanErr3d: mean('err3d'), maxErr3d: max('err3d'), meanInYaw: mean('inYaw'), meanOutYaw: mean('outYaw'), meanOutFwd: mean('outFwdDeg'), punches: res };
 };
 window.lab = lab;
 

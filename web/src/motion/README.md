@@ -115,6 +115,27 @@ const ts = fx.update(dt);           // hit-stop time scale (1 normally, 0.05 for
 Toggles: `fx.setEnabled(bool)`, `fx.options.{hitStop, shake, trails, sparks, flash, dust, shakeScale}`.
 Cost: one draw for all sprites + one per visible trail, no per-frame allocation, ~0.02-0.1 ms/frame.
 
+### Trigger + punch round (QA v3 round 2 fixes)
+
+- **Punch triggers** (`actions.js`): the wrist must move along the torso's forward axis (shoulder + hip line
+  crossed with up; velocity relative to the shoulder, forward cone ~53 deg), end up in front of the shoulder
+  (reach-forward > 0.45 arm), stay between hip + 0.2 torso and head height; `handsUp` / `tPose` / that side's
+  `*HandUp` and a jump take-off (400 ms, or hips rising) suppress punches; both arms never fire inside 150 ms
+  (same frame: the faster one wins). Trigger timing on real jabs is unchanged (fires ~0.1 s into the strike).
+- **Kick triggers**: foot rising (or driving forward, never falling) with the knee raised; one kick per foot
+  lift: the side re-arms only when the ankle is back level with the support foot (no second kick on the way down).
+- **Regression test** (`triggerTest.js`): `node web/src/motion/triggerTest.js` or `lab.triggerTest()` drives the
+  detector with the synthetic loop on a simulated clock (4 configs: 0 / 5 / 10 mm noise, 30 / 25 Hz) and checks
+  per phase: guard/squat/jump/T-pose/wave 0 punches, jab/cross 4 L + 4 R per loop, 1 kick per foot, 3 jumps.
+- **Punch path** (`layers.js` + arm IK in `pipeline.js`): the accent's added yaw is capped at ~0.27 rad (shoulder
+  lead 0.08), and while a punch accent is active the arm IK first swings the arm back onto the *pre-accent*
+  tracked shoulder->hand direction (weighted by the reach boost), then extends along it. `lab.punchProbe()`
+  reports the avatar shoulder->fist direction at peak vs the input: 28 deg error -> ~5 deg.
+- **Predictor speed limiter** (`track.js`): adds a catch-up term (gap to the newest sample beyond `gapFree`
+  0.12 rad, closed at 1/`gapTau` 0.25 s); before, a big pose change (T-pose -> guard) was crawled at ~0.15 rad/s
+  for ~8 s, which read as still-pose jitter (guard out 0.10-0.125 vs raw 0.04). `jitter.ok` now also requires
+  out <= 1.2 x raw when raw > 0.02 rad/s; `jitter.ratio` = out / raw.
+
 ## Stages
 
 ```

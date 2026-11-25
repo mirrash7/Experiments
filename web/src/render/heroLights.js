@@ -1,6 +1,6 @@
 // Character light rig (anime-rendering.md 5.1). The hero renders in its own scene (composited over the arena by
 // render/post.js) so arena lighting never wrecks the face:
-//   key   - directional, follows the camera azimuth, 35 deg to the camera's left and 40 deg up, NEUTRAL white
+//   key   - directional, follows the camera azimuth, 42 deg to the camera's left and 34 deg up, NEUTRAL white
 //           (QA v3 r1 P0-2: a warm key + warm ground + warm grade stacked and turned the authored hair/skin orange)
 //   fill  - hemisphere (pale cool sky / neutral grey-beige ground), MToon's GI term reads it through giEqualization
 //   rim   - a cool back light from behind the hero, opposite the camera and to its right (P2-3, separation from the
@@ -10,7 +10,9 @@
 //           ShadowMaterial plane on the deck (tinted, like the contact blob). Tight ortho frustum follows the hero.
 import * as THREE from 'three';
 
-export const KEY_LIGHT = { yawDeg: 35, pitchDeg: 40, intensity: 3.0, color: '#fffcf8' };
+// QA v3 r2 P2-5 / face pass: 42 deg off the camera azimuth (was 35) and 34 deg up, so at Front ~20-25 % of the face
+// falls in the SDF shade (a clean cheek/nose shape on the far side) while the body terminator stays on the far flank
+export const KEY_LIGHT = { yawDeg: 42, pitchDeg: 34, intensity: 3.0, color: '#fffcf8' };
 export const RIM_LIGHT = { yawDeg: 145, pitchDeg: 28, intensity: 0.85, color: '#bcd4ff' };
 
 export function createHeroLights(heroScene, { sunDirection = new THREE.Vector3(4, 9, 6).normalize() } = {}) {

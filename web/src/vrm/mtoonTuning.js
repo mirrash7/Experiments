@@ -26,7 +26,7 @@ const _hsl = { h: 0, s: 0, l: 0 }, _hsl2 = { h: 0, s: 0, l: 0 };
 /** Outline widths (fraction of half the screen height; ~2 px body line at 900 px). */
 export const OUTLINE_WIDTH = { body: 0.0045, hair: 0.0048, face: 0.0035 };
 /** Angel-ring strength per quality tier. */
-const HAIR_SPEC = { low: 0, medium: 0.32, high: 0.42 };
+const HAIR_SPEC = { low: 0, medium: 0.45, high: 0.6 }; // r2 P2-3: thinner band, so a stronger peak
 
 function kindOf(name) {
   if (NO_OUTLINE.test(name)) return 'detail';
@@ -114,7 +114,8 @@ export function tuneMToon(vrm, { quality = 'high', root = null, headProxy = null
     face = measureVRMFace(vrm, faceEntry[0], { root, headProxy, restWorld });
     if (face) {
       shared.uFaceMap.value = createVRMFaceShadowMap(face.L, 256);
-      shared.uFaceFrame.value.set(face.W, face.H, face.chinY, 0.2);
+      // wrap 0.25 (was 0.2): with the key ~40 deg off the camera, ~20-25 % of the face sits in the SDF shade at Front
+      shared.uFaceFrame.value.set(face.W, face.H, face.chinY, 0.25);
       shared.uFaceX0.value = face.x0;
       summary.faceSDF = true;
       summary.faceLayout = { W: +face.W.toFixed(3), H: +face.H.toFixed(3), chinY: +face.chinY.toFixed(3), eyeV: +face.L.eye.v.toFixed(2), noseV: +face.L.noseV.toFixed(2) };
@@ -141,7 +142,7 @@ export function tuneMToon(vrm, { quality = 'high', root = null, headProxy = null
     let shift = THREE.MathUtils.clamp(authored.shift, -0.3, 0.1);
     if (kind === 'skin') toony = THREE.MathUtils.clamp(Math.max(authored.toony, 0.55), 0, 0.7);
     if (kind === 'face') {
-      if (face) { toony = 0.82; shift = 0.0; } // the SDF field is calibrated with its terminator at 0
+      if (face) { toony = 0.92; shift = 0.0; } // the SDF field is calibrated with its terminator at 0; crisp anime edge
       else { toony = THREE.MathUtils.clamp(Math.max(authored.toony, 0.5), 0, 0.7); shift = Math.max(authored.shift, 0.02); }
     }
 
@@ -152,15 +153,23 @@ export function tuneMToon(vrm, { quality = 'high', root = null, headProxy = null
       mean.getHSL(_hsl);
       const offHue = m !== mainHair && hueDist(_hsl.h, mainHSL.h) > 0.06 && _hsl.s > 0.2;
       if (offHue) {
-        // P1-1: under-layer tint (VRoid violet) -> muted lavender-grey toward the main hair hue
+        // P1-1 / r2 P2-2: under-layer tint (VRoid violet) -> a darker, slightly cooler version of the MAIN hair tone
+        // (was a dark plum at 0.55x the main lightness that read as a separate cap under the pink top)
         toSRGB(lit).getHSL(_hsl2);
-        tmp.setHSL(hueLerp(_hsl2.h, mainHSL.h, 0.35), Math.min(_hsl2.s * 0.45, 0.15), Math.max(_hsl2.l, mainHSL.l * 0.55));
+        tmp.setHSL(hueLerp(_hsl2.h, mainHSL.h, 0.7), Math.min(Math.max(_hsl2.s * 0.5, mainHSL.s * 0.6), 0.3), Math.max(_hsl2.l, mainHSL.l * 0.8));
         lit = fromSRGB(tmp);
       }
-      // P0-1: authored shade, 30 % toward a darker, desaturated version of the hair's own mean colour
-      const refHSL = offHue ? mainHSL : _hsl;
-      tmp.setHSL(refHSL.h, Math.min(refHSL.s, 0.6) * 0.45, refHSL.l * 0.5);
-      const shadeS = toSRGB(shade).lerp(tmp, offHue ? 0.6 : 0.3);
+      // P0-1 / r2 P2-1: main hair keeps its authored shade HUE (the lavender tip shade), tamed 18 % toward a darker,
+      // less saturated version of itself; under-layers go 60 % toward a darkened main-hair tone
+      let shadeS;
+      if (offHue) {
+        tmp.setHSL(mainHSL.h, Math.min(mainHSL.s, 0.6) * 0.55, mainHSL.l * 0.6);
+        shadeS = toSRGB(shade).lerp(tmp, 0.7);
+      } else {
+        toSRGB(shade).getHSL(_hsl2);
+        tmp.setHSL(_hsl2.h, _hsl2.s * 0.75, _hsl2.l * 0.82);
+        shadeS = toSRGB(shade).lerp(tmp, 0.18);
+      }
       // cap shade saturation at the lit saturation
       shadeS.getHSL(_hsl2); toSRGB(lit).getHSL(_hsl);
       if (_hsl2.s > _hsl.s) shadeS.setHSL(_hsl2.h, _hsl.s, _hsl2.l);
@@ -171,6 +180,12 @@ export function tuneMToon(vrm, { quality = 'high', root = null, headProxy = null
       // (linear scale toward a touch of grey: same hue, no extra chroma)
       const l = (shade.r + shade.g + shade.b) / 3;
       shade = shade.clone().lerp(tmp.setRGB(l, l, l), 0.15).multiplyScalar(0.84);
+      if (kind === 'face' && face) {
+        // face pass: the hemisphere fill adds the LIT albedo to the shade side too, so the authored near-white shade
+        // left the SDF shape invisible (~0.9 of lit). Deeper and a touch richer, same rose hue -> ~0.78 of lit on screen
+        toSRGB(shade).getHSL(_hsl2);
+        shade = fromSRGB(tmp.setHSL(_hsl2.h, Math.min(1, _hsl2.s * 1.15), _hsl2.l)).multiplyScalar(0.7);
+      }
     }
 
     for (const target of [m, ...outlines]) {

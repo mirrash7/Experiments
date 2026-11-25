@@ -80,29 +80,41 @@ const FRAG_FACE = /* glsl */`
   ${LIGHTS_BEGIN}`;
 
 const FRAG_RIM = /* glsl */`
-  rim *= mix( 1.0, arenaKeyShading, uArenaRimLit );
+  // QA v3 r2 P2-6: no rim on back faces (the inside of short sleeves / collars glowed lavender when the arm rose)
+  float arenaFront = step( 0.0, faceDirection );
+  rim *= mix( 1.0, arenaKeyShading, uArenaRimLit ) * arenaFront;
   col += rimMix * rim;
   {
     // cool back rim: crisp fresnel edge facing the back light
     float fr = 1.0 - saturate( dot( viewDir, normal ) );
     float bk = saturate( dot( normal, uBackDirView ) );
     col += uBackRimColor * uArenaBackRim * smoothstep( 0.5, 0.8, fr ) * smoothstep( 0.05, 0.45, bk )
-      * mix( vec3( 1.0 ), diffuseColor.rgb, 0.4 );
+      * mix( vec3( 1.0 ), diffuseColor.rgb, 0.4 ) * arenaFront;
   }
   #ifdef ARENA_HAIR_RING
   {
+    // QA v3 r2 P2-3: a crisp, thin, BROKEN band (was a soft milky smear): narrow hard-edged lobe, shifted per strand
+    // (value noise across the strand cards' UV + the texture luminance), masked to the crown, lit side only,
+    // tinted toward a pale lavender-white
     vec3 up = normalize( uHeadUpView );
     vec3 T = up - normal * dot( normal, up );
     float tl = length( T );
     T = tl > 1e-3 ? T / tl : vec3( 0.0, 1.0, 0.0 );
     float lum = dot( diffuseColor.rgb, vec3( 0.3333 ) );
-    vec3 Ts = normalize( T + normal * ( uHairSpecShift + ( lum - uHairLumMean ) * 0.9 ) );
+    float sx = uv.x * 46.0 + uv.y * 7.0;
+    float h0 = fract( sin( floor( sx ) * 127.1 ) * 43758.5453 ), h1 = fract( sin( ( floor( sx ) + 1.0 ) * 127.1 ) * 43758.5453 );
+    float strand = mix( h0, h1, smoothstep( 0.0, 1.0, fract( sx ) ) ) - 0.5;
+    vec3 Ts = normalize( T + normal * ( uHairSpecShift + ( lum - uHairLumMean ) * 0.45 + strand * 0.1 ) );
     vec3 Hh = normalize( uKeyDirView + viewDir );
     float th = dot( Ts, Hh );
     float s = sqrt( max( 0.0, 1.0 - th * th ) );
-    float band = smoothstep( 0.955, 0.992, s );
-    float facing = smoothstep( 0.2, 0.5, dot( normal, viewDir ) ) * smoothstep( -0.2, 0.3, dot( normal, up ) );
-    col += uHairSpec * band * facing * arenaKeyShading * mix( diffuseColor.rgb, vec3( 1.0 ), 0.45 );
+    float band = smoothstep( 0.982, 0.990, s );
+    // gaps: some strands carry no highlight at all (broken band)
+    band *= step( 0.28, fract( h0 * 7.13 ) );
+    float crown = smoothstep( 0.15, 0.45, dot( normal, up ) );
+    float facing = smoothstep( 0.25, 0.55, dot( normal, viewDir ) ) * crown;
+    col += uHairSpec * band * facing * arenaKeyShading * arenaFront
+      * mix( diffuseColor.rgb, vec3( 0.97, 0.94, 1.0 ), 0.7 );
   }
   #endif`;
 

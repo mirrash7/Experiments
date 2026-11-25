@@ -63,6 +63,7 @@ export class SyntheticSource {
     let hand = { left: 'fist', right: 'fist' };
     let palmRef = { left: V(0, 1, 0.3), right: V(0, 1, 0.3) };   // index knuckle direction (vertical fist)
     let shZ = { left: 0, right: 0 }, shY = 0;
+    let toeOut = { left: 0.25, right: 0.5 };                     // fighting stance: toes out, rear foot more
 
     if (still) {
       hipY = 0.95; hipX = 0; yaw = 0; pitch = 0;
@@ -70,6 +71,7 @@ export class SyntheticSource {
       wr = { left: V(0.27, 0.95, 0.08), right: V(-0.27, 0.95, 0.08) };
       elbowPole = { left: V(0.3, 0, -1), right: V(-0.3, 0, -1) };
       hand = { left: 'relaxed', right: 'relaxed' }; palmRef = { left: V(0, 0, 1), right: V(0, 0, 1) };
+      toeOut = { left: 0.12, right: 0.12 };
     } else if (phase === 1) { // jab / cross: one punch every 0.5 s, alternating, fast out (0.11 s), hold, retract
       const k = Math.floor(u / 0.5), v = u % 0.5;
       const side = k % 2 === 0 ? 'left' : 'right', sg = side === 'left' ? 1 : -1;
@@ -93,7 +95,7 @@ export class SyntheticSource {
       yaw = 0.08 + sg * 0.1 * chamber;
     } else if (phase === 3) { // squats: two per move, hips back + down, torso leans in, arms out for balance
       const d = (1 - Math.cos(u * Math.PI)) / 2;
-      ank.left.set(0.16, 0.08, 0); ank.right.set(-0.16, 0.08, 0);
+      ank.left.set(0.16, 0.08, 0); ank.right.set(-0.16, 0.08, 0); toeOut = { left: 0.35, right: 0.35 };
       hipY = 0.93 - d * 0.36; hipZ = -0.1 * d; pitch = 0.04 + 0.42 * d; yaw = 0;
       wr = { left: guardW(1).lerp(V(0.14, 1.32, 0.48), d), right: guardW(-1).lerp(V(-0.14, 1.32, 0.48), d) };
       palmRef = { left: V(0, 1, 0.3).lerp(V(-1, 0.4, 0), d), right: V(0, 1, 0.3).lerp(V(1, 0.4, 0), d) };
@@ -101,13 +103,16 @@ export class SyntheticSource {
       const v = u % (4 / 3);
       const dip = v < 0.25 ? Math.sin((v / 0.25) * Math.PI) * 0.08 : v > 0.7 && v < 0.95 ? Math.sin(((v - 0.7) / 0.25) * Math.PI) * 0.07 : 0;
       const air = v >= 0.25 && v < 0.7 ? Math.sin(((v - 0.25) / 0.45) * Math.PI) * 0.24 : 0;
-      ank.left.set(0.14, 0.08 + air, 0); ank.right.set(-0.14, 0.08 + air, 0);
-      hipY = 0.94 - dip + air; yaw = 0; pitch = 0.05 + dip;
+      // knees tuck at the apex (feet rise ~6 cm more than the hips): no straight-leg "plank" jump
+      const tuck = (air / 0.24) * 0.06;
+      ank.left.set(0.14, 0.08 + air + tuck, -0.3 * tuck); ank.right.set(-0.14, 0.08 + air + tuck, -0.3 * tuck);
+      hipY = 0.94 - dip + air; yaw = 0; pitch = 0.05 + dip; toeOut = { left: 0.2, right: 0.2 };
       wr = { left: V(0.3, 1.92 + air, 0.02), right: V(-0.3, 1.92 + air, 0.02) };
       elbowPole = { left: V(1, 0, -0.2), right: V(-1, 0, -0.2) };
-      hand = { left: 'open', right: 'open' }; palmRef = { left: V(0, 0, 1), right: V(0, 0, 1) };
+      // loose hands (not flat open palms), palms facing in
+      hand = { left: 'relaxed', right: 'relaxed' }; palmRef = { left: V(0, 0, 1), right: V(0, 0, 1) };
     } else if (phase === 5) { // T-pose, leaning the upper body left / right (feet stay put)
-      ank.left.set(0.12, 0.08, 0); ank.right.set(-0.12, 0.08, 0);
+      ank.left.set(0.12, 0.08, 0); ank.right.set(-0.12, 0.08, 0); toeOut = { left: 0.15, right: 0.15 };
       hipY = 0.95; yaw = 0; pitch = 0; lean = Math.sin(u / 4 * Math.PI * 2) * 0.28;
       wr = { left: V(0.73, 1.45, 0), right: V(-0.73, 1.45, 0) };
       elbowPole = { left: V(0, -0.3, -1), right: V(0, -0.3, -1) };
@@ -117,7 +122,10 @@ export class SyntheticSource {
       hipY = 0.95; yaw = 0; pitch = 0;
       wr = { left: V(0.27, 0.95, 0.08), right: V(-0.45 + Math.sin(t * 9) * 0.12, 1.85, 0.05) };
       elbowPole = { left: V(0.3, 0, -1), right: V(-1, -0.6, 0) };
-      hand = { left: 'relaxed', right: 'open' }; palmRef = { left: V(0, 0, 1), right: V(0, 0, 1) };
+      // waving hand: open, palm toward the camera (index side toward the midline), so it reads as a wave and
+      // not as a hand seen edge-on (which read as "pointing", QA v3 r2 P2-10)
+      hand = { left: 'relaxed', right: 'open' }; palmRef = { left: V(0, 0, 1), right: V(1, 0.15, 0) };
+      toeOut = { left: 0.15, right: 0.15 };
     }
 
     // ---- torso: hips centre, yaw (turn), pitch (lean forward), lean (sideways), upper body only
@@ -143,7 +151,8 @@ export class SyntheticSource {
       J[s + 'Elbow'] = el; J[s + 'Wrist'] = w;
       // knees bend forward over the toes (pole forward + a little outward)
       const H = J[s + 'Hip'], A = ank[s].clone();
-      J[s + 'Knee'] = limb(H, A, LEG, V(s === 'left' ? 0.2 : -0.2, 0, 1));
+      const sgn = s === 'left' ? 1 : -1;
+      J[s + 'Knee'] = limb(H, A, LEG, V(sgn * (0.2 + 0.6 * toeOut[s]), 0, 1));
       J[s + 'Ankle'] = A;
     }
     const handPt = (wr2, el) => wr2.clone().add(wr2.clone().sub(el).normalize().multiplyScalar(0.09));
@@ -154,7 +163,8 @@ export class SyntheticSource {
       // foot: points along the shin's forward when lifted (kick), flat forward when planted
       const shin = A.clone().sub(K).normalize();
       const lifted = Math.min(1, Math.max(0, (A.y - 0.1) / 0.3));
-      const fwd = V(0, 0, 1).lerp(shin.clone().add(V(0, 0, 0.5)).normalize(), lifted * 0.8).normalize();
+      const a = (s === 'left' ? 1 : -1) * toeOut[s];
+      const fwd = V(Math.sin(a), 0, Math.cos(a)).lerp(shin.clone().add(V(0, 0, 0.5)).normalize(), lifted * 0.8).normalize();
       J[s + 'Heel'] = A.clone().add(V(0, -0.06, 0)).addScaledVector(fwd, -0.05);
       J[s + 'Toe'] = A.clone().add(V(0, -0.07, 0)).addScaledVector(fwd, 0.17);
     }

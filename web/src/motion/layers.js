@@ -213,15 +213,17 @@ export class Accents {
         const ec = Math.min(e, 1);
         out.reach[side] = Math.max(out.reach[side], ec);
         out.wrist[side] = Math.max(out.wrist[side], smoothstep(0, 0.6, ec));
-        const k = a.strength;
-        // kinetic chain: hips -> chest -> shoulder (leading) -> fist (snap)
-        addRot('hips', E(0, -sg * 0.09 * lead * k, 0));
-        addRot('spine', E(0.03 * ec, -sg * 0.08 * lead * k, 0));
-        addRot('chest', E(0, -sg * 0.13 * e * k, 0));
-        addRot('upperChest', E(0, -sg * 0.16 * e * k, 0));
-        addRot(`${side}Shoulder`, E(0, -sg * 0.3 * lead * k, -sg * 0.05 * lead));
-        addRot(`${other}Shoulder`, E(0, sg * 0.08 * ec, 0));
-        addRot('head', E(0.05 * ec, sg * 0.18 * ec, 0));                  // eyes stay on the target
+        const k = a.strength, ky = Math.min(k, 1.1);
+        // kinetic chain: hips -> chest -> shoulder (leading) -> fist (snap). QA v3 r2 P1-2: the added yaw is
+        // capped at ~0.3 rad in total (was ~0.76 with the shoulder), and the arm IK re-aims the fist along the
+        // tracked shoulder->wrist direction, so the torso turns under a fist that travels straight
+        addRot('hips', E(0, -sg * 0.04 * lead * ky, 0));
+        addRot('spine', E(0.03 * ec, -sg * 0.05 * lead * ky, 0));
+        addRot('chest', E(0, -sg * 0.07 * e * ky, 0));
+        addRot('upperChest', E(0, -sg * 0.09 * e * ky, 0));
+        addRot(`${side}Shoulder`, E(0, -sg * 0.08 * lead * ky, -sg * 0.03 * lead));   // subtle shoulder lead
+        addRot(`${other}Shoulder`, E(0, sg * 0.05 * ec, 0));
+        addRot('head', E(0.05 * ec, sg * 0.2 * ec * ky, 0));              // eyes stay on the target
         if (!a.hit && u >= P.impact) { a.hit = true; out.impacts.push({ kind: 'punch', side, strength: k }); }
       } else if (a.name.startsWith('kick')) {
         const side = a.name === 'kickLeft' ? 'left' : 'right', other = side === 'left' ? 'right' : 'left';

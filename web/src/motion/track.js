@@ -44,7 +44,8 @@ const _v = new THREE.Vector3();
  *   spring half-life x (1 + 1.5 r), r = kN / (S + kN): a still, noisy player is smoothed harder
  *   speed limiter: the displayed bone never turns faster than 0.85 x the tracked angular speed (+0.1 rad/s), so
  *   the catch-up after each sample and overshoot cannot add motion the player did not make (out <= raw on the
- *   rate-matched jitter metric for every source we test), while the lead on fast moves is kept.
+ *   rate-matched jitter metric for every source we test), while the lead on fast moves is kept; plus a catch-up
+ *   term (gap to the newest sample beyond gapFree, closed at 1/gapTau) so a large jump is not crawled for seconds.
  * opts.noiseAware = false restores the plain constant-velocity predictor (for A/B in the lab).
  */
 export class BoneTrack {
@@ -108,7 +109,12 @@ export class BoneTrack {
     const out = this.spring.update(this.target, _v.copy(this.w).multiplyScalar(g), hl, dt);
     if (opts.predict && PREDICT.vlim > 0) {
       if (this._lastOut) {
-        const lim = (Math.max(this.w.length(), this.wPrev.length()) * PREDICT.vlim + PREDICT.vmin) * dt;
+        // catch-up allowance: when the output is far behind the newest SAMPLE (after a big jump in the tracked
+        // pose, re-acquired tracking, or a hit-stop), the limiter alone crawled at ~0.15 rad/s for seconds and the
+        // crawl itself read as still-pose jitter (QA v3 r2 P2-4: guard out 2.3x raw after a T-pose / jump)
+        const gap = 2 * Math.acos(Math.min(1, Math.abs(this._lastOut.dot(this.q1))));
+        const catchUp = Math.max(0, gap - PREDICT.gapFree) / PREDICT.gapTau;
+        const lim = (Math.max(this.w.length(), this.wPrev.length()) * PREDICT.vlim + PREDICT.vmin + catchUp) * dt;
         const ang = 2 * Math.acos(Math.min(1, Math.abs(this._lastOut.dot(out))));
         if (ang > lim) { out.copy(this._lastOut.slerp(out, lim / ang)); this.spring.q.copy(out); }
       }
@@ -128,7 +134,7 @@ export class BoneTrack {
 }
 
 /** Predictor tuning (shared, live-editable for experiments: pipeline.predictTuning). */
-export const PREDICT = { noiseK: 1.5, htau: 0.06, reversal: 0.3, hlNoise: 1.5, wSmooth: 1, peakGate: 0.8, vlim: 0.85, vmin: 0.1 };
+export const PREDICT = { noiseK: 1.5, htau: 0.06, reversal: 0.3, hlNoise: 1.5, wSmooth: 1, peakGate: 0.8, vlim: 0.85, vmin: 0.1, gapFree: 0.12, gapTau: 0.25 };
 
 export class PointTrack {
   constructor({ halflife = 0.05, maxSpeed = 3 } = {}) {

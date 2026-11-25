@@ -8,7 +8,7 @@
 //                     every stream resampled onto one 30 Hz grid: raw = solver output (tracker samples);
 //                     out = the filter stage (prediction + tracking spring, same bones, before authored layers);
 //                     final = the displayed pose (incl. accents, IK, hand poses: authored motion, not noise).
-//                     jitter.ok = out <= raw (QA P1-6 regression check)
+//                     jitter.ok = out <= raw + 0.05 and out <= 1.2 raw (raw > 0.02); jitter.ratio = out / raw
 //   footSkate         mean horizontal ankle speed (m/s) while a foot is in contact: before IK (tracked FK) vs
 //                     after the foot lock
 //   fkError           JS MHR FK vs InstantHMR joints_3d on the joint-readout keypoints (mm)
@@ -115,7 +115,11 @@ export class Metrics {
         rawAcc: f(this.rawJitter.acc.rms, 1), outAcc: f(this.outJitter.acc.rms, 1),
         finalSpeed: f(this.finalJitter.speed.rms, 3), finalAcc: f(this.finalJitter.acc.rms, 1),
         // regression check (QA P1-6): the filter stage (prediction + spring) must not add jitter
-        ok: this.outJitter.speed.rms <= this.rawJitter.speed.rms + 0.05,   // + 3 deg/s: below visibility (still poses)
+        // + 3 deg/s absolute tolerance (below visibility), AND a ratio check so a still pose cannot hide a 2x
+        // amplification inside the tolerance (QA v3 r2 P2-4): out <= 1.2 x raw whenever raw > 0.02 rad/s
+        ok: this.outJitter.speed.rms <= this.rawJitter.speed.rms + 0.05
+          && (this.rawJitter.speed.rms <= 0.02 || this.outJitter.speed.rms <= 1.2 * this.rawJitter.speed.rms),
+        ratio: f(this.outJitter.speed.rms / Math.max(1e-6, this.rawJitter.speed.rms), 2),
       },
       footSkate: { raw: f(this.skateRaw.mean, 4), out: f(this.skateOut.mean, 4), contact: f(this.contactFrac.mean, 2), lockMiss: f(this.ikErr.mean, 4), lockMissMax: f(this.ikErr.a.length ? Math.max(...this.ikErr.a) : 0, 4) },
       fkError: { mean: f(this.fkErr.mean, 3), max: f(this.fkMax.a.length ? Math.max(...this.fkMax.a) : 0, 3) },

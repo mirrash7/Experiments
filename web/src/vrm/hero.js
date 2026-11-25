@@ -29,6 +29,7 @@ import { VRMLoaderPlugin, VRMUtils, VRMHumanBoneList, VRMHumanBoneParentMap } fr
 import { tuneMToon } from './mtoonTuning.js';
 import { tuneSpringBones } from './springTuning.js';
 import { mergeVRMPrimitives } from './mergePrimitives.js';
+import { registerPartialExpressions, gameExpressionPresets } from './expressions.js';
 
 /** Legacy bone name -> VRM humanoid bone name. */
 export const LEGACY_TO_VRM = {
@@ -39,16 +40,7 @@ export const LEGACY_TO_VRM = {
   rightThigh: 'rightUpperLeg', rightShin: 'rightLowerLeg', rightFoot: 'rightFoot',
 };
 
-// game expression names -> VRM preset weights (VRM 0.x presets are renamed to 1.0 names by three-vrm)
-const EXPRESSION_PRESETS = {
-  neutral: {}, idle: {},
-  happy: { happy: 0.85 },
-  determined: { angry: 0.45, happy: 0.12 },
-  angry: { angry: 0.8 },
-  surprised: { surprised: 0.8 },
-  sad: { sad: 0.7 },
-  relaxed: { relaxed: 0.7 },
-};
+// game expression names -> per-model weights + timing: vrm/expressions.js (QA v3 r2 P1-5)
 const FINGERS = ['Thumb', 'Index', 'Middle', 'Ring', 'Little'];
 const FINGER_JOINTS = ['Metacarpal', 'Proximal', 'Intermediate', 'Distal'];
 
@@ -200,12 +192,15 @@ export async function loadVRMHero(url, { camera = null, renderer = null, onProgr
   const lookTarget = new THREE.Object3D(); lookTarget.name = 'heroLookTarget';
   if (vrm.lookAt) { vrm.lookAt.target = camera || null; vrm.lookAt.autoUpdate = !!camera; }
   const expr = vrm.expressionManager;
+  const partial = registerPartialExpressions(vrm);
+  const EXPRESSION_PRESETS = gameExpressionPresets(vrm, partial.has);
+  info.expressionBuild = { partial: partial.source, determined: EXPRESSION_PRESETS.determined.w };
   const state = {
-    exprTarget: {}, exprCur: {}, exprHold: 0,
+    exprTarget: {}, exprCur: {}, exprHold: 0, exprAttack: 0.08, exprRelease: 0.3,
     blinkTimer: 2 + Math.random() * 2, blinkPhase: -1, manualBlink: null,
     handPose: { left: 'relaxed', right: 'relaxed' }, handHold: 0, handCurl: { left: 0, right: 0 },
   };
-  const presetNames = new Set(Object.values(EXPRESSION_PRESETS).flatMap((p) => Object.keys(p)));
+  const presetNames = new Set(Object.values(EXPRESSION_PRESETS).flatMap((p) => Object.keys(p.w)));
 
   // write proxy rotations -> normalized bones
   function syncToNormalized() {
@@ -247,10 +242,11 @@ export async function loadVRMHero(url, { camera = null, renderer = null, onProgr
   }
 
   function setExpression(name, weight) {
-    if (weight === undefined) { // game preset (holds ~1.4 s, then eases back to neutral)
-      const p = EXPRESSION_PRESETS[name] ?? (expr?.getExpression(name) ? { [name]: 1 } : {});
-      state.exprTarget = { ...p };
-      state.exprHold = name === 'neutral' || name === 'idle' ? 0 : 1.4;
+    if (weight === undefined) { // game preset: fast attack, short hold, eased release back to neutral
+      const p = EXPRESSION_PRESETS[name] ?? { w: expr?.getExpression(name) ? { [name]: 1 } : {}, attack: 0.1, hold: 1.0, release: 0.4 };
+      for (const n of Object.keys(p.w)) presetNames.add(n);
+      state.exprTarget = { ...p.w };
+      state.exprHold = p.hold > 0 ? p.attack + p.hold : 0; state.exprAttack = p.attack; state.exprRelease = p.release;
       return name;
     }
     state.exprTarget[name] = weight; state.exprHold = Infinity;
@@ -297,11 +293,13 @@ export async function loadVRMHero(url, { camera = null, renderer = null, onProgr
   function updateExpressions(dt) {
     if (!expr) return;
     if (state.exprHold !== Infinity && state.exprHold > 0 && (state.exprHold -= dt) <= 0) state.exprTarget = {};
-    const k = 1 - Math.exp(-dt * 10);
+    // ~95 % of the way in `attack` s when rising, `release` s when falling
+    const kIn = 1 - Math.exp(-dt * 3 / Math.max(0.02, state.exprAttack));
+    const kOut = 1 - Math.exp(-dt * 3 / Math.max(0.02, state.exprRelease));
     for (const n of presetNames) {
       const goal = state.exprTarget[n] ?? 0;
       const cur = state.exprCur[n] ?? 0;
-      const v = cur + (goal - cur) * k;
+      const v = cur + (goal - cur) * (goal > cur ? kIn : kOut);
       state.exprCur[n] = Math.abs(v) < 1e-3 ? 0 : v;
       if (expr.getExpression(n)) expr.setValue(n, state.exprCur[n]);
     }

@@ -16,7 +16,8 @@ import { SpritePool, SHAPE } from './sprites.js';
 
 export const FX_DEFAULTS = {
   hitStop: true, hitStopMs: { punch: 60, kick: 80 }, hitStopScale: 0.05,
-  shake: true, shakeScale: 1, shakeTrauma: { punch: 0.32, kick: 0.5, land: 0.38 }, shakeMaxPos: 0.03, shakeMaxRot: 0.012,
+  // QA v3 r2 P2-7: punch shake was ~3 mm / 0.1 deg (imperceptible): a little more trauma and rotation, still small
+  shake: true, shakeScale: 1, shakeTrauma: { punch: 0.45, kick: 0.58, land: 0.4 }, shakeMaxPos: 0.034, shakeMaxRot: 0.016,
   trails: true, sparks: true, flash: true, dust: true,
   colors: { punch: 0xff8a3d, punchCore: 0xfff3c4, kick: 0x52c8ff, kickCore: 0xeaffff, dust: 0xd9ccb6 },
 };
@@ -50,6 +51,7 @@ export class CombatFx {
     this._m = new THREE.Matrix4(); this._p = new THREE.Vector3(); this._d = new THREE.Vector3(); this._q = new THREE.Quaternion();
     this._e = new THREE.Euler(); this._camPos = new THREE.Vector3(); this._tmp = new THREE.Vector3(); this._tmp2 = new THREE.Vector3();
     this.stats = { ms: 0, msAvg: 0, sprites: 0, impacts: 0, lands: 0 };
+    this._hc = new THREE.Vector3(); this._ht = new THREE.Vector3(); this._awayFromHead = new THREE.Vector3();
     this._offs = [];
     if (motion) this.setMotion(motion);
   }
@@ -67,6 +69,20 @@ export class CombatFx {
     }));
   }
   setHero(hero) { this.hero = hero; }
+
+  /** World-space head sphere (centre between the head joint and the head top, radius ~ half that span), or null. */
+  _head() {
+    const b = this.hero?.bones;
+    if (!b?.head) return null;
+    const c = b.head.getWorldPosition(this._hc);
+    if (b.headTop) {
+      const t = b.headTop.getWorldPosition(this._ht);
+      const span = c.distanceTo(t);
+      c.lerp(t, 0.45);
+      return { c, r: Math.max(0.1, span * 0.62) };
+    }
+    return { c: c.addScaledVector(_up, 0.08 * this._scale()), r: 0.14 * this._scale() };
+  }
 
   // hero space -> world
   _heroMatrix() {
@@ -91,9 +107,33 @@ export class CombatFx {
     }
     if (O.shake) this.trauma = Math.min(1, this.trauma + (kick ? O.shakeTrauma.kick : O.shakeTrauma.punch) * k);
     const col = kick ? O.colors.kick : O.colors.punch;
+    // QA v3 r2 P2-7: keep the flash / ring / sparks off the face. Lead the burst a little along the strike, then, if
+    // it still overlaps the head as seen from the camera, push it out sideways (perpendicular to the view) and
+    // shrink it, so a head-height kick or a cross punch never paints over the face. Trails are unchanged.
+    p.addScaledVector(d, (kick ? 0.08 : 0.05) * s);
+    let fxScale = 1;
+    const head = this._head();
+    const flashR = (kick ? 0.3 : 0.22) * s;
+    if (head) {
+      const view = this._tmp.copy(this.camera.getWorldPosition(this._camPos)).sub(head.c).normalize();
+      const off = this._tmp2.copy(p).sub(head.c);
+      off.addScaledVector(view, -off.dot(view));
+      let dist = off.length();
+      const minD = head.r + flashR * 0.7;
+      if (dist < minD) {
+        if (dist < 1e-4) { off.copy(d).addScaledVector(view, -d.dot(view)); if (off.lengthSq() < 1e-8) off.set(1, 0, 0); off.normalize(); dist = 0; }
+        else off.divideScalar(dist);
+        const push = Math.min(minD - dist, 0.22 * s);
+        p.addScaledVector(off, push);
+        dist += push;
+        fxScale = THREE.MathUtils.clamp((dist - head.r) / (flashR * 0.7), 0.5, 1);
+      }
+      this._awayFromHead.copy(p).sub(head.c).normalize();
+    } else this._awayFromHead.set(0, 0, 0);
     if (O.flash) {
-      this.sprites.spawn(SHAPE.star, p.x, p.y, p.z, 0, 0, 0, { life: 0.11, size: 0.2 * s * (kick ? 1.3 : 1), size1: 0.3 * s * (kick ? 1.3 : 1), color: col, rot: Math.random() * 3 });
-      this.sprites.spawn(SHAPE.ring, p.x, p.y, p.z, 0, 0, 0, { life: 0.16, size: 0.06 * s, size1: (kick ? 0.3 : 0.2) * s, color: kick ? O.colors.kickCore : O.colors.punchCore });
+      const k2 = (kick ? 1.2 : 1) * fxScale;
+      this.sprites.spawn(SHAPE.star, p.x, p.y, p.z, 0, 0, 0, { life: 0.11, size: 0.18 * s * k2, size1: 0.26 * s * k2, color: col, rot: Math.random() * 3 });
+      this.sprites.spawn(SHAPE.ring, p.x, p.y, p.z, 0, 0, 0, { life: 0.16, size: 0.06 * s * fxScale, size1: (kick ? 0.26 : 0.2) * s * fxScale, color: kick ? O.colors.kickCore : O.colors.punchCore });
     }
     if (O.sparks) {
       const n = kick ? 12 : 9;
@@ -101,6 +141,9 @@ export class CombatFx {
         // cone around the strike direction + a few flying back / sideways
         const v = this._tmp.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
         v.addScaledVector(d, i < n * 0.7 ? 1.4 : -0.3).normalize();
+        // never spray back into the face
+        const toward = -v.dot(this._awayFromHead);
+        if (toward > 0) v.addScaledVector(this._awayFromHead, 2 * toward).normalize();
         const sp = (3 + Math.random() * 4) * s * (kick ? 1.15 : 1);
         this.sprites.spawn(SHAPE.streak, p.x, p.y, p.z, v.x * sp, v.y * sp, v.z * sp,
           { life: 0.14 + Math.random() * 0.12, size: (0.035 + Math.random() * 0.02) * s, stretch: 2.6, color: col, drag: 9 });
@@ -199,5 +242,5 @@ export class CombatFx {
     this.group.removeFromParent();
   }
 }
-const _fwd = new THREE.Vector3(0, 0, 1);
+const _fwd = new THREE.Vector3(0, 0, 1), _up = new THREE.Vector3(0, 1, 0);
 const noise = (t, f, ph) => Math.sin(t * f + ph) * 0.6 + Math.sin(t * f * 2.31 + ph * 1.7) * 0.4;

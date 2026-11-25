@@ -445,6 +445,17 @@ export class MotionPipeline {
     // 4. accents
     const legsTracked = this.state.legsTracked && (W.leftLowerLeg ?? 0) > 0.5;
     const acc = o.accents ? this.accents.sample(this._t, { legsTracked }) : null;
+    // punch aim (QA v3 r2 P1-2): the tracked shoulder->hand direction BEFORE the accent turns the torso, so the
+    // arm IK can keep the fist travelling straight while the chest rotates under it
+    let aim = null;
+    if (acc && (acc.reach.left > 0.01 || acc.reach.right > 0.01)) {
+      const f0 = rig.fk(rot, hips, this._aimFK ??= { rot: {}, pos: {} });
+      for (const s of ['left', 'right']) {
+        if (acc.reach[s] <= 0.01 || !f0.pos[s + 'Hand'] || (W[s + 'LowerArm'] ?? 0) < 0.3) continue;
+        const d = (this._aimDir ??= { left: new THREE.Vector3(), right: new THREE.Vector3() })[s].copy(f0.pos[s + 'Hand']).sub(f0.pos[s + 'UpperArm']);
+        if (d.lengthSq() > 1e-8) (aim ??= {})[s] = d.normalize();
+      }
+    }
     if (acc) {
       for (const [b, q] of Object.entries(acc.add)) if (rot[b]) rot[b].multiply(q);
       hips.add(acc.hips);
@@ -540,10 +551,20 @@ export class MotionPipeline {
         let e = ext;
         if (o.reachRemap && ext > 0.8) e = 0.8 + 0.2 * smoothstep(0.8, 0.95, ext);
         e = e + (1 - e) * boost;
-        if (Math.abs(e - ext) < 0.004) continue;
-        const target = sh.clone().addScaledVector(d.normalize(), e * L);
+        if (Math.abs(e - ext) < 0.004 && !aim?.[s]) continue;
         const aR = fk.rot[ua].clone(), bR = fk.rot[la].clone();
-        twoBoneIK(fk.pos[ua], fk.pos[la], fk.pos[hd], aR, bR, target, 0.01);
+        let el = fk.pos[la], hand = fk.pos[hd];
+        d.normalize();
+        if (aim?.[s]) {
+          // swing the whole arm about the shoulder back onto the tracked direction (weighted by the accent), then
+          // extend along it: the accent's torso twist no longer drags the fist across the body
+          const q = quatPow(fromTo(d, aim[s]), boost);
+          aR.premultiply(q); bR.premultiply(q);
+          el = el.clone().sub(sh).applyQuaternion(q).add(sh); hand = hand.clone().sub(sh).applyQuaternion(q).add(sh);
+          d.copy(hand).sub(sh).normalize();
+        }
+        const target = sh.clone().addScaledVector(d, e * L);
+        twoBoneIK(sh, el, hand, aR, bR, target, 0.01);
         rot[ua].copy(fk.rot[rig.parent[ua]]).invert().multiply(aR);
         rot[la].copy(aR).invert().multiply(bR);
         // the hand keeps its LOCAL rotation (it travels with the forearm); keeping its world rotation bent the

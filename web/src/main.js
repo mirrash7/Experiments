@@ -244,9 +244,9 @@ function setView(v, { snap = false } = {}) {
   const from = camera3.position.clone().sub(camLook).setY(0), to = pos.clone().sub(look).setY(0);
   if (from.lengthSq() > 1e-6 && from.normalize().dot(to.normalize()) < 0) snap = true;
   camGoal.pos.copy(pos); camGoal.look.copy(look);
-  if (snap) { camera3.position.copy(camGoal.pos); camLook.copy(camGoal.look); camera3.lookAt(camLook); camera3.updateMatrixWorld(); }
+  if (snap) { _liftVec.set(0, 0, 0); camLift = 0; camera3.position.copy(camGoal.pos); camLook.copy(camGoal.look); camera3.lookAt(camLook); camera3.updateMatrixWorld(); }
   controls.enabled = !!V.orbit;
-  if (V.orbit) { controls.target.copy(camGoal.look); camera3.position.copy(camGoal.pos); }
+  if (V.orbit) { _liftVec.set(0, 0, 0); camLift = 0; controls.target.copy(camGoal.look); camera3.position.copy(camGoal.pos); }
   if (V.mirror !== null) setMirror(V.mirror);
   document.querySelectorAll('#views button').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
 }
@@ -331,25 +331,46 @@ function logLine(html) {
   while ($('log').children.length > 6) $('log').lastChild.remove();
 }
 let floaterSide = 1;
+const FLOATER_BONES = ['headTop', 'head', 'neck', 'leftUpperArm', 'rightUpperArm', 'leftForeArm', 'rightForeArm', 'leftHand', 'rightHand',
+  'leftHandTip', 'rightHandTip', 'hips', 'leftShin', 'rightShin', 'leftFoot', 'rightFoot', 'leftToe', 'rightToe'];
+const _fv = new THREE.Vector3();
 function floater(text, color) {
   if (!character) return;
-  // QA v3 r1 P2-2: anchor beside a shoulder in screen space (alternating sides), clamped inside the viewport,
-  // instead of above the head (drifted off the top edge, overlapped the head in Behind view)
-  const sh = new THREE.Vector3(), head = new THREE.Vector3();
-  character.bones.leftUpperArm.getWorldPosition(sh);
-  character.bones.head.getWorldPosition(head);
-  const l = sh.clone().project(camera3);
-  character.bones.rightUpperArm.getWorldPosition(sh);
-  const r = sh.project(camera3);
-  head.project(camera3);
+  // QA v3 r2 P2-8: labels never cross the head or body. Project the posed skeleton to a screen rect (padded for
+  // the head and limbs' thickness) and place the label OUTSIDE it, beside the shoulders, alternating sides; if a
+  // side has no room inside the viewport, use the other one. (r1 anchored beside a shoulder, which still crossed
+  // the face in Side view and on cross punches.)
+  const W = innerWidth, H = innerHeight;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, headY = 0, shY = 0;
+  camera3.updateMatrixWorld();
+  for (const k of FLOATER_BONES) {
+    const b = character.bones[k];
+    if (!b) continue;
+    b.getWorldPosition(_fv).project(camera3);
+    const sx = (_fv.x * 0.5 + 0.5) * W, sy = (-_fv.y * 0.5 + 0.5) * H;
+    x0 = Math.min(x0, sx); x1 = Math.max(x1, sx); y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+    if (k === 'head') headY = sy;
+    if (k === 'leftUpperArm') shY = sy;
+  }
+  if (!isFinite(x0)) return;
+  // head radius in px (head joint -> head top), used as the padding around the bone rect
+  const pad = Math.max(24, Math.abs(headY - y0) * 0.9);
+  x0 -= pad; x1 += pad;
+  const halfW = text.length * 9 + 10;               // ~Bangers 34 px, centred (translate -50 %)
+  const margin = 12;
+  const leftX = x0 - margin - halfW, rightX = x1 + margin + halfW;
+  const fitsL = leftX - halfW >= 8, fitsR = rightX + halfW <= W - 8;
   floaterSide = -floaterSide;
-  const xs = [(l.x * 0.5 + 0.5) * innerWidth, (r.x * 0.5 + 0.5) * innerWidth].sort((a, b) => a - b);
-  const x = floaterSide < 0 ? xs[0] - 90 : xs[1] + 90;
-  const y = (-head.y * 0.5 + 0.5) * innerHeight + 30;
+  let side = floaterSide;
+  if (side < 0 && !fitsL && fitsR) side = 1;
+  if (side > 0 && !fitsR && fitsL) side = -1;
+  const x = THREE.MathUtils.clamp(side < 0 ? leftX : rightX, halfW + 8, W - halfW - 8);
+  // shoulder height (the label floats up 90 px from there); stays clear of the top HUD
+  const y = THREE.MathUtils.clamp(shY - 10, 150, H - 80);
   const el = document.createElement('div');
   el.className = 'floater'; el.textContent = text; el.style.color = color;
-  el.style.left = `${THREE.MathUtils.clamp(x, 120, innerWidth - 120)}px`;
-  el.style.top = `${THREE.MathUtils.clamp(y, 160, innerHeight - 80)}px`;
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
   $('floaters').appendChild(el);
   setTimeout(() => el.remove(), 1200);
 }
@@ -381,7 +402,11 @@ function onAction(name, info) {
   character?.setAction?.(avatarName);
   // fists: the pipeline's punch accent / hand poser closes the hands when it drives the fingers
   if (name.startsWith('punch') && !character?.fingersExternal) character?.setHandPose?.('fist', 'both');
-  if (name === 'jump' || name.startsWith('punch') || name.startsWith('kick')) character?.setExpression?.('determined');
+  // QA v3 r2 P1-5: per-action faces (vrm/expressions.js): punch = focused frown (mouth closed), kick = a brief kiai,
+  // jump = happy + small "aa"
+  if (name.startsWith('punch')) character?.setExpression?.('determined');
+  else if (name.startsWith('kick')) character?.setExpression?.('effort');
+  else if (name === 'jump') character?.setExpression?.(character?.kind === 'vrm' ? 'jump' : 'happy');
   else if (name === 'handsUp') character?.setExpression?.('happy');
   reaction.onAction(name, info);
   fx?.onAction?.(name, info); // FX HOOK: hit-stop / impact / sparks
@@ -762,6 +787,41 @@ const clock = new THREE.Clock();
 const _hp = new THREE.Vector3(), _keyAim = new THREE.Vector3(), _follow = new THREE.Vector3(), _tmp = new THREE.Vector3();
 let lastFrameAt = 0;
 
+// ------------------------------------------------------------------------------------------- camera headroom
+// Top of the hero (head top + hand tips) projected with the camera's GOAL pose (no lift, no shake). If it sits above
+// HEADROOM.top (fraction of the viewport height from the top edge) the needed lift is the world height that moves it
+// back down at the hero's depth; the applied lift rises quickly and settles slowly.
+const HEADROOM = { top: 0.085, maxLift: 0.55, rise: 12, fall: 1.6, dolly: 0.35 };
+const _goalCam = new THREE.PerspectiveCamera();
+const _camBack = new THREE.Vector3(), _top = new THREE.Vector3(), _liftVec = new THREE.Vector3();
+let camLift = 0;
+function headroomLift(dt) {
+  if (!character || !character.bones.headTop) { camLift += (0 - camLift) * (1 - Math.exp(-dt * HEADROOM.fall)); return camLift; }
+  _goalCam.copy(camera3, false);
+  _follow.y = 0;
+  _goalCam.position.copy(camGoal.pos).add(_follow);
+  _goalCam.lookAt(_tmp.copy(camGoal.look).add(_follow));
+  _goalCam.updateMatrixWorld(); _goalCam.matrixWorldInverse.copy(_goalCam.matrixWorld).invert();
+  _camBack.copy(camGoal.pos).sub(camGoal.look).normalize();
+  let need = 0;
+  const limit = 1 - 2 * HEADROOM.top; // NDC y of the headroom line
+  for (const k of ['headTop', 'leftHandTip', 'rightHandTip']) {
+    const b = character.bones[k];
+    if (!b) continue;
+    b.getWorldPosition(_top);
+    const depth = -_tmp.copy(_top).applyMatrix4(_goalCam.matrixWorldInverse).z;
+    const ndcY = _top.project(_goalCam).y;
+    if (ndcY > limit && depth > 0) {
+      // world height per NDC unit at that depth; the dolly-back adds a little room too, so this slightly overshoots
+      const perNdc = depth * Math.tan(THREE.MathUtils.degToRad(_goalCam.fov) / 2);
+      need = Math.max(need, (ndcY - limit) * perNdc);
+    }
+  }
+  need = Math.min(need, HEADROOM.maxLift * heroScale);
+  camLift += (need - camLift) * (1 - Math.exp(-dt * (need > camLift ? HEADROOM.rise : HEADROOM.fall)));
+  return camLift;
+}
+
 /** retarget -> hero.update -> overlays/lights. Shared by the rAF loop and renderOnce(). */
 function stepHero(dt, t) {
   if (!character) return;
@@ -810,8 +870,16 @@ function frameLoop() {
   if (!controls.enabled) {
     if (character) character.bones.hips.getWorldPosition(_hp); else _hp.set(0, 0, 0);
     _follow.set(_hp.x * 0.6, 0, _hp.z * 0.6);
+    // QA v3 r2 P1-3: vertical headroom. Standing framing is unchanged (~65 %); when the head top or a raised hand
+    // would come within HEADROOM of the top edge (jump apex, hands up), the camera lifts (and eases back a
+    // little) just enough to keep it in frame: fast up, slow settle, so it reads as a soft follow, not a jolt.
+    // The lift is applied on top of the (slow) follow lerp, not through it, so it can keep up with a 0.45 s jump.
+    const lift = headroomLift(dt);
+    camera3.position.sub(_liftVec); camLook.y -= _liftVec.y;
     camera3.position.lerp(_tmp.copy(camGoal.pos).add(_follow), 1 - Math.exp(-dt * 3));
     camLook.lerp(_tmp.copy(camGoal.look).add(_follow), 1 - Math.exp(-dt * 3));
+    _liftVec.set(0, lift, 0).addScaledVector(_camBack, lift * HEADROOM.dolly);
+    camera3.position.add(_liftVec); camLook.y += lift;
     camera3.lookAt(camLook);
   } else controls.update();
 
