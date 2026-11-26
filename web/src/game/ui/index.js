@@ -3,20 +3,37 @@
 //   const ui = createUI(ctx);           // appends ui.root to document.body (or ctx.uiParent)
 //   per frame: ui.update(dt)            // cursor + current screen + HUD (call after motion.update)
 //
-// Additions beyond the contract (all optional):
+// Additions beyond the contract (all optional, additive):
 //   - every screens.*() call returns a handle: { node, ...extras } (boot: setStatus(text, kind), setAvailable(map);
-//     calibrate: progress, finish(); tutorial: drill, reps, skip(); results: rank)
+//     calibrate: progress, finish(), setSilhouetteCanvas(c, { mirrored }); tutorial: drill, reps, charge, skip();
+//     results: rank, phase, showStats(), setPhotoCard(pc); clearSpace: finish())
 //   - screens.boot({ onTracker, current, available, status }), screens.settings({ settings, onClose, onChange }),
 //     screens.pause({ reason, onResume?, onQuit? }), screens.tutorial({ steps?, onDone(result), onSkip? })
-//   - hud.judgement(pos, kind, { errMs }) shows the timing error in ms; pos in px or normalized (≤ 1.5)
+//   - screens.title({ onPlay, onTutorial, onSettings, mode?, onMode?(mode), best?, tutorialLabel? }): Showcase / Challenge
+//     toggle (writes settings.mode, emits bus 'settings:change')
+//   - screens.calibrate({ onDone, recalibrate, silhouetteCanvas?, silhouetteMirrored = true, seated? }): live camera
+//     silhouette slot for the CV team (fitted into the guide by the tracked keypoints)
+//   - screens.clearSpace({ onDone({ skipped, auto }), seated?, autoContinue = true, holdS = 2.5 }): 2 m x 2 m safety check
+//   - screens.results({ stats, onReplay, onAgain, onTitle, onSkipReplay?, photoCard? }): letterboxed replay first
+//     (bus 'replay' { on } or { type: 'start'|'progress'|'end', progress, label, speed, hits }, or ctx.game.replay),
+//     then the panels; stats.newBest / best / prevBest / mode / body.timingSdMs / body.moveCounts
+//   - settings rows: mode ('showcase'|'challenge'), seated (bool); volume accepts { master, music, sfx }
+//   - hud: lanes (top = banners / warnings, low = prompts next to the hero), priorities warning > prompt > info
+//       hud.banner(text, sub?, { priority: 'info'|'warning', duration })
+//       hud.prompt(text|null, { move, wait, sub, kicker, tone, success }) - wait: Act 0 "do the move to continue" style
+//       hud.message(id, { lane: 'top'|'low', text, sub, priority, ttl, move, wait } | null)
+//       hud.distance(state) is gated (persist 0.8 s, quiet during big moves, off for demo/autoplay trackers)
+//       hud.judgement(pos, kind, { errMs }) clamps into a safe area off the hero; ms only with ?debug=1, else EARLY/LATE
+//       hud.setMode('showcase'|'challenge'|null), hud.placeJudgement(x, y), hud.heroBounds()
 //   - hud.pip.setSkeleton(kp2d, edges, { selfie }); without calls the PiP reads ctx.motion.lastFrame itself
 //   - ui.measureDistance(frame?) → 'too-close'|'too-far'|'off-left'|'off-right'|null (feeds hud.distance)
 //   - cursor.enable('auto') (default): on whenever a [data-ui-button] is visible; cursor.setMode('body'|'project')
+//   - ui.replayOverlay = true: results() owns the replay letterbox and the mirror PiP (ctx.mirror.canvas, "YOU · 0.35×")
 //   - ui.dispose()
 import '../game.css';
 import { createCursor } from './cursor.js';
 import { createHUD } from './hud.js';
-import { createScreenHost, bootScreen, titleScreen, settingsScreen, pauseScreen, countdownOverlay, resultsScreen } from './screens.js';
+import { createScreenHost, bootScreen, titleScreen, settingsScreen, clearSpaceScreen, pauseScreen, countdownOverlay, resultsScreen } from './screens.js';
 import { calibrateScreen } from './calibrate.js';
 import { tutorialScreen } from './tutorial.js';
 import { h, freshFrame, measureDistance } from './body.js';
@@ -53,6 +70,7 @@ export function createUI(ctx) {
   const screens = {
     boot: (o = {}) => show('boot', bootScreen(ctx, o)),
     calibrate: (o = {}) => show('calibrate', calibrateScreen(ctx, shared, o)),
+    clearSpace: (o = {}) => show('clearSpace', clearSpaceScreen(ctx, o)),
     title: (o = {}) => show('title', titleScreen(ctx, o)),
     tutorial: (o = {}) => show('tutorial', tutorialScreen(ctx, o)),
     settings: (o = {}) => show('settings', settingsScreen(ctx, { settings: o.settings || ctx.settings || {}, ...o })),
@@ -73,7 +91,10 @@ export function createUI(ctx) {
 
   return {
     root, cursor, screens, hud, update,
-    measureDistance: (frame) => measureDistance(frame ?? freshFrame(ctx.motion), { upperBodyOnly: !!ctx.settings?.upperBodyOnly }),
-    dispose() { disposed = true; host.show(null, null); cursor.dispose(); root.remove(); },
+    // the results screen draws its own letterbox + "YOU · 0.35×" mirror picture-in-picture from the bus 'replay'
+    // events, so CORE's fallback letterbox / mirror inset (core/space.js) stand down
+    replayOverlay: true,
+    measureDistance: (frame) => measureDistance(frame ?? freshFrame(ctx.motion), { upperBodyOnly: !!ctx.settings?.upperBodyOnly || !!ctx.settings?.seated }),
+    dispose() { disposed = true; host.show(null, null); hud.dispose?.(); cursor.dispose(); root.remove(); },
   };
 }

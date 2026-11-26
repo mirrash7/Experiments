@@ -12,29 +12,33 @@ import { NOISE_GLSL, crystalMaterial, crystalGeo, mergeGeos, canvasTex, toonRamp
 // ------------------------------------------------------------------------------------------------ palettes
 // hex colours are authored sRGB (THREE.Color converts to linear). az/el: sun azimuth (+ = toward +X = screen-left
 // in the rear gameplay camera) and elevation, radians.
+// R1 colour script: only the sky, far fog and emissives carry the act hue. Near world lighting stays a WARM key
+// against COOL, desaturated hemisphere shadows (local contrast), and the blossom canopies are re-tinted per act
+// (fol / folMix) so they never melt into a same-hue sky. moon / mAz / mEl: a crescent moon (act 2 night).
 export const PALETTES = {
   title: { top: '#2f4aa0', mid: '#f0a066', hor: '#ffd9a0', low: '#f4b07c', sun: '#fff3cc', glow: '#ffae55', cLit: '#ffe6bc', cShade: '#c87896', cDeep: '#8a4e86',
-    fog: '#f2b48a', hemiS: '#ffdcb8', hemiG: '#5a3c74', key: '#ffd6a8', keyI: 2.2, rim: '#ffb070', rune: '#ffc65a', rift: '#ff5fcf', ember: '#ffc070', petal: '#ffc4dc',
-    water: '#bfe6ff', stars: 0, eclipse: 0, az: 0.36, el: 0.075, rays: 0.8 },
+    fog: '#f2b48a', hemiS: '#d8cce0', hemiG: '#4a3c6c', key: '#ffd6a8', keyI: 2.2, rim: '#ffb070', rune: '#ffc65a', rift: '#ff5fcf', ember: '#ffc070', petal: '#ffc4dc',
+    water: '#bfe6ff', fol: '#ffffff', stars: 0, eclipse: 0, az: 0.36, el: 0.075, rays: 0.8, moon: 0, folMix: 0 },
   0: { top: '#3e3488', mid: '#ff9a50', hor: '#ffc27a', low: '#f7a064', sun: '#ffe6a8', glow: '#ff8a30', cLit: '#ffcf94', cShade: '#b0607e', cDeep: '#743e78',
-    fog: '#f19c6c', hemiS: '#ffc896', hemiG: '#553468', key: '#ffc890', keyI: 2.2, rim: '#ff9a50', rune: '#ffae38', rift: '#ff5ad0', ember: '#ffb050', petal: '#ffbcd0',
-    water: '#ffe0c0', stars: 0, eclipse: 0, az: 0.34, el: 0.05, rays: 1.0 },
-  1: { top: '#33206c', mid: '#e2508e', hor: '#ff92a0', low: '#ea7290', sun: '#ffd6b0', glow: '#ff4f8c', cLit: '#ffb4c6', cShade: '#80408c', cDeep: '#4c2a6c',
-    fog: '#d86c94', hemiS: '#ffb4c8', hemiG: '#4a2a68', key: '#ffb4c0', keyI: 2.0, rim: '#ff5aa0', rune: '#ff58c0', rift: '#ff40d8', ember: '#ff7ab0', petal: '#ffb0d8',
-    water: '#ffc8e0', stars: 0.05, eclipse: 0, az: 0.31, el: 0.026, rays: 1.0 },
-  2: { top: '#140e3c', mid: '#6838a8', hor: '#d878aa', low: '#9a58a2', sun: '#ffbe98', glow: '#cc4a9c', cLit: '#e2a4d4', cShade: '#4c2e7c', cDeep: '#2a1a54',
-    fog: '#7c4c9c', hemiS: '#c8a0f0', hemiG: '#2c1c50', key: '#e8b0e0', keyI: 1.8, rim: '#c070ff', rune: '#b878ff', rift: '#c050ff', ember: '#d890ff', petal: '#e8b8ff',
-    water: '#d8c0ff', stars: 0.35, eclipse: 0, az: 0.28, el: 0.004, rays: 0.8 },
+    fog: '#f19c6c', hemiS: '#b4aed4', hemiG: '#3a3058', key: '#ffd2a0', keyI: 2.3, rim: '#ff9a50', rune: '#ffae38', rift: '#ff5ad0', ember: '#ffb050', petal: '#ffbcd0',
+    water: '#ffe0c0', fol: '#ffffff', stars: 0, eclipse: 0, az: 0.34, el: 0.05, rays: 1.0, moon: 0, folMix: 0 },
+  1: { top: '#2a1c66', mid: '#d84a8e', hor: '#ff92a0', low: '#ea7290', sun: '#ffd6b0', glow: '#ff4f8c', cLit: '#ffb4c6', cShade: '#80408c', cDeep: '#4c2a6c',
+    fog: '#d86c94', hemiS: '#9ea4d8', hemiG: '#262a50', key: '#ffd8b4', keyI: 2.1, rim: '#ff7a90', rune: '#ff58c0', rift: '#ff40d8', ember: '#ffb070', petal: '#fff0f4',
+    water: '#ffc8e0', fol: '#fff6ec', stars: 0.05, eclipse: 0, az: 0.31, el: 0.026, rays: 1.0, moon: 0, folMix: 0.85 },
+  2: { top: '#03051a', mid: '#141a56', hor: '#a8327e', low: '#2a1650', sun: '#ffb090', glow: '#b03a86', cLit: '#8c8ad8', cShade: '#2a2866', cDeep: '#12103a',
+    fog: '#34285e', hemiS: '#6c76c8', hemiG: '#16142e', key: '#ffbca0', keyI: 1.45, rim: '#9aa0ff', rune: '#c890ff', rift: '#d050ff', ember: '#ffb0d8', petal: '#c8d0ff',
+    water: '#b8c8ff', fol: '#a8b4f0', stars: 0.9, eclipse: 0, az: 0.28, el: -0.2, rays: 0.12, moon: 1, folMix: 0.8 },
   boss: { top: '#030209', mid: '#0e0828', hor: '#34205c', low: '#1e1238', sun: '#ffe8c8', glow: '#6a3ad0', cLit: '#7c6cb4', cShade: '#201840', cDeep: '#100c24',
-    fog: '#2a1c4a', hemiS: '#8c80d8', hemiG: '#1a1234', key: '#b0a8ff', keyI: 1.6, rim: '#7a6cff', rune: '#7ef0ff', rift: '#8a5cff', ember: '#9ad8ff', petal: '#c0d0ff',
-    water: '#a0b0ff', stars: 1, eclipse: 1, az: 0.0, el: 0.13, rays: 0.45 },
+    fog: '#2a1c4a', hemiS: '#7078b8', hemiG: '#121026', key: '#e0d4ff', keyI: 1.5, rim: '#7ad0ff', rune: '#7ef0ff', rift: '#8a5cff', ember: '#9ad8ff', petal: '#c0d0ff',
+    water: '#a0b0ff', fol: '#8a94d0', stars: 1, eclipse: 1, az: 0.0, el: 0.33, rays: 0.45, moon: 0, folMix: 0.8 },
   results: { top: '#2c4c9c', mid: '#8eb2e2', hor: '#ffdcc4', low: '#e4b4b4', sun: '#fff6e4', glow: '#ffc4a4', cLit: '#fff2e4', cShade: '#a4a4d2', cDeep: '#6c6ca4',
-    fog: '#d4c4da', hemiS: '#ffe8dc', hemiG: '#5a5a8c', key: '#fff0e0', keyI: 2.2, rim: '#ffd0b0', rune: '#9ae4ff', rift: '#a080ff', ember: '#ffe0c0', petal: '#ffd4e4',
-    water: '#d8f0ff', stars: 0.15, eclipse: 0, az: 0.2, el: 0.12, rays: 0.5 },
+    fog: '#d4c4da', hemiS: '#e0e0f0', hemiG: '#5a5a8c', key: '#fff0e0', keyI: 2.2, rim: '#ffd0b0', rune: '#9ae4ff', rift: '#a080ff', ember: '#ffe0c0', petal: '#ffd4e4',
+    water: '#d8f0ff', fol: '#ffffff', stars: 0.15, eclipse: 0, az: 0.2, el: 0.12, rays: 0.5, moon: 0, folMix: 0 },
 };
-const COLOR_KEYS = ['top', 'mid', 'hor', 'low', 'sun', 'glow', 'cLit', 'cShade', 'cDeep', 'fog', 'hemiS', 'hemiG', 'key', 'rim', 'rune', 'rift', 'ember', 'petal', 'water'];
-const NUM_KEYS = ['keyI', 'stars', 'eclipse', 'az', 'el', 'rays'];
-const OVERDRIVE = { rune: new THREE.Color('#ffd040'), ember: new THREE.Color('#ffd060'), rift: new THREE.Color('#ffc040') };
+const COLOR_KEYS = ['top', 'mid', 'hor', 'low', 'sun', 'glow', 'cLit', 'cShade', 'cDeep', 'fog', 'hemiS', 'hemiG', 'key', 'rim', 'rune', 'rift', 'ember', 'petal', 'water', 'fol'];
+const NUM_KEYS = ['keyI', 'stars', 'eclipse', 'az', 'el', 'rays', 'moon', 'folMix'];
+const OVERDRIVE = { rune: new THREE.Color('#ffd040'), ember: new THREE.Color('#ffd060'), rift: new THREE.Color('#ffe6a0') };
+const MOON_DIR = new THREE.Vector3(-Math.sin(0.42) * Math.cos(0.2), Math.sin(0.2), Math.cos(0.42) * Math.cos(0.2)).normalize();   // upper screen-right
 
 export const RIFT_POS = new THREE.Vector3(0, 7.2, 54);
 const SEA_Y = -20;
@@ -44,13 +48,13 @@ const SKY_VERT = /* glsl */`varying vec3 vDir; void main(){ vDir = position; vec
 const SKY_FRAG = /* glsl */`
 #define FBM_OCT __OCT__
 uniform vec3 uTop, uMid, uHor, uLow, uSun, uGlow, uCLit, uCShade;
-uniform vec3 uSunDir; uniform float uTime, uStars, uEclipse, uRays, uSunSize;
+uniform vec3 uSunDir, uMoonDir; uniform float uTime, uStars, uEclipse, uRays, uSunSize, uMoon;
 varying vec3 vDir;
 ${NOISE_GLSL}
 void main(){
   vec3 d = normalize(vDir);
   float h = d.y;
-  vec3 c = mix(uHor, uMid, smoothstep(0.0, 0.2, h));
+  vec3 c = mix(uHor, uMid, smoothstep(0.0, 0.2 - uMoon * 0.1, h));
   c = mix(c, uTop, smoothstep(0.16, 0.8, h));
   c = mix(c, uLow, smoothstep(0.0, -0.08, h));
   float sd = dot(d, uSunDir);
@@ -98,6 +102,19 @@ void main(){
   float edge = exp(-abs(ang - uSunSize) * 420.0);
   float streamers = 0.6 + 0.4 * vnoise(vec2(th * 14.0, uTime * 0.2));
   c += uEclipse * (uGlow * corona * 2.4 * streamers + uSun * edge * 6.0);
+  // crescent moon: lit disc minus an offset shadow disc, soft halo
+  if (uMoon > 0.001) {
+    float ma = acos(clamp(dot(d, uMoonDir), -1.0, 1.0));
+    vec3 mx = normalize(cross(vec3(0.0, 1.0, 0.0), uMoonDir)); vec3 my = cross(uMoonDir, mx);
+    vec2 mp = vec2(dot(d, mx), dot(d, my));
+    float mr = 0.034;
+    float mdisc = 1.0 - smoothstep(mr - 0.0015, mr, length(mp));
+    float mshadow = 1.0 - smoothstep(mr * 0.86 - 0.0015, mr * 0.86, length(mp - vec2(-mr * 0.42, mr * 0.18)));
+    float lit = mdisc * (1.0 - mshadow * 0.93);
+    c = mix(c, c * 0.6, mdisc * mshadow * uMoon);
+    c += vec3(0.92, 0.94, 1.0) * lit * 2.6 * uMoon;
+    c += vec3(0.55, 0.6, 1.0) * exp(-max(ma - mr, 0.0) * 22.0) * 0.22 * uMoon * (1.0 - mdisc);
+  }
   gl_FragColor = vec4(c, 1.0);
   #include <colorspace_fragment>
 }`;
@@ -273,11 +290,33 @@ void main(){
   gl_FragColor = vec4(col * vign, inA * 0.97);
 }`;
 
+// camera-aware prop fade (near props): per-prop bounding sphere in aProp (world xyz, r)
+const PROP_FADE_VERT = /* glsl */`
+attribute vec4 aProp; uniform vec4 uFocus; uniform vec4 uFocus2; uniform vec4 uClear; varying float vFade;
+float propFade(){
+  vec3 c = (modelMatrix * vec4(aProp.xyz, 1.0)).xyz; float r = aProp.w;
+  vec3 cam = cameraPosition; vec3 v = c - cam;
+  float f = smoothstep(r + 3.0, r + 1.4, length(v));                       // hugging the camera
+  vec3 seg = uFocus.xyz - cam; float L = length(seg); vec3 dir = seg / max(L, 1e-4);
+  float t = dot(v, dir);
+  if (t > 0.0 && t < L - 0.3) f = max(f, smoothstep(r + 0.7, r * 0.55, length(v - dir * t)));   // between camera and hero
+  if (uFocus2.w > 0.0) {                                                     // sightline cone (boss weak point)
+    vec3 d2 = normalize(uFocus2.xyz - cam); float t2 = dot(v, d2);
+    if (t2 > 0.5) { float ang = length(v - d2 * t2) / t2; float lim = r / t2 + uFocus2.w; f = max(f, smoothstep(lim, lim * 0.6, ang)); }
+  }
+  if (uClear.w > 0.0) { float lim = uClear.w + r; f = max(f, smoothstep(lim, lim * 0.75, length(c - uClear.xyz))); }   // explicit clear sphere
+  return f;
+}`;
+const PROP_FADE_FRAG = /* glsl */`
+varying float vFade;
+float bayer2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
+float bayer4(vec2 a){ return bayer2(0.5 * a) * 0.25 + bayer2(a); }`;
+
 // ------------------------------------------------------------------------------------------------ helpers
 // World geometry is smooth-shaded (indexed, vertex normals) toon with per-vertex colours, merged into one mesh and
 // drawn twice: toon body + an inverted-hull ink outline (anime environment look, 2 draws total).
 let _uq = null; const unitQuadGeo = () => (_uq ??= new THREE.PlaneGeometry(1, 1));
-function vcolor(geo, fn) {
+function vcolor(geo, fn, fol = 0) {
   const pos = geo.attributes.position, nrm = geo.attributes.normal, n = pos.count;
   const col = new Float32Array(n * 3);
   const p = new THREE.Vector3(), q = new THREE.Vector3(), out = new THREE.Color();
@@ -287,6 +326,7 @@ function vcolor(geo, fn) {
     col[i * 3] = out.r; col[i * 3 + 1] = out.g; col[i * 3 + 2] = out.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setAttribute('aFol', new THREE.BufferAttribute(new Float32Array(n).fill(fol), 1));   // 1 = blossom canopy (per-act tint)
   return geo;
 }
 /** indexed, smooth vertex normals, position + normal only */
@@ -348,7 +388,7 @@ function sakuraGeo(seed, pos, s = 1) {
     b.scale(1, 0.8, 1);
     const d = i === 0 ? 0 : (0.9 + r() * 0.4) * s;
     b.translate(Math.cos(a) * d + 0.35 * s, (2.6 + r() * 0.8 + (i === 0 ? 0.5 : 0)) * s, Math.sin(a) * d);
-    vcolor(b, (o, nn) => o.copy(pinkB).lerp(pinkA, THREE.MathUtils.clamp(nn.y * 0.7 + 0.5, 0, 1)).lerp(pinkC, Math.max(0, nn.y - 0.6) * 1.2));
+    vcolor(b, (o, nn) => o.copy(pinkB).lerp(pinkA, THREE.MathUtils.clamp(nn.y * 0.7 + 0.5, 0, 1)).lerp(pinkC, Math.max(0, nn.y - 0.6) * 1.2), 1);
     parts.push(b);
   }
   const m = mergeGeometries(parts);
@@ -545,7 +585,7 @@ export function createStage(ctx, shared) {
     uniforms: {
       uTop: { value: cur.top }, uMid: { value: cur.mid }, uHor: { value: cur.hor }, uLow: { value: cur.low }, uSun: { value: cur.sun }, uGlow: { value: cur.glow },
       uCLit: { value: cur.cLit }, uCShade: { value: cur.cShade }, uSunDir: { value: sunDir }, uTime: time,
-      uStars: { value: 0 }, uEclipse: { value: 0 }, uRays: { value: 1 }, uSunSize: { value: 0.085 },
+      uStars: { value: 0 }, uEclipse: { value: 0 }, uRays: { value: 1 }, uSunSize: { value: 0.085 }, uMoonDir: { value: MOON_DIR }, uMoon: { value: 0 },
     },
   });
   const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 48, 24), skyMat);
@@ -595,12 +635,29 @@ export function createStage(ctx, shared) {
   const ramp = toonRamp();
   const stoneMat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: ramp });
   const rimU = { value: cur.rim };
-  stoneMat.onBeforeCompile = (s) => {
-    s.uniforms.uRimCol = rimU;
-    s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uRimCol;')
+  const folU = { uFol: { value: cur.fol }, uFolMix: { value: 0 } };
+  // camera-aware prop clearing (near props only): props near the camera, between the camera and the hero (uFocus) or
+  // inside the boss sightline cone (uFocus2.w = cone, radians) dither out. Pure GPU, works for every camera / cut.
+  const fadeU = { uFocus: { value: new THREE.Vector4(0, 1.2, 0, 0) }, uFocus2: { value: new THREE.Vector4(0, 0, 0, 0) }, uClear: { value: new THREE.Vector4(0, 0, 0, 0) } };
+  const toonPatch = (fade) => (sh) => {
+    sh.uniforms.uRimCol = rimU; Object.assign(sh.uniforms, folU);
+    if (fade) Object.assign(sh.uniforms, fadeU);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aFol; varying float vFol;' + (fade ? PROP_FADE_VERT : ''))
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFol = aFol;' + (fade ? '\nvFade = propFade();' : ''));
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uRimCol; uniform vec3 uFol; uniform float uFolMix; varying float vFol;' + (fade ? PROP_FADE_FRAG : ''))
+      .replace('#include <color_fragment>', '#include <color_fragment>\n{ float lum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722)); diffuseColor.rgb = mix(diffuseColor.rgb, uFol * (0.3 + lum * 0.95), vFol * uFolMix); }')
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>' + (fade ? '\nif (vFade > 0.002 && vFade * 1.02 > bayer4(gl_FragCoord.xy)) discard;' : ''))
       .replace('#include <opaque_fragment>', 'outgoingLight += uRimCol * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 3.0) * 0.55;\n#include <opaque_fragment>');
   };
+  stoneMat.onBeforeCompile = toonPatch(false);
+  stoneMat.customProgramCacheKey = () => 'bl-stone';
+  const nearMat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: ramp });
+  nearMat.onBeforeCompile = toonPatch(true);
+  nearMat.customProgramCacheKey = () => 'bl-stone-near';
   const parts = [platformGeo()];
+  const nearParts = [];
+  const nearProp = (g) => { g.computeBoundingSphere(); const { center: c, radius: r } = g.boundingSphere; const n = g.attributes.position.count, a = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { a[4 * i] = c.x; a[4 * i + 1] = c.y; a[4 * i + 2] = c.z; a[4 * i + 3] = r; } g.setAttribute('aProp', new THREE.BufferAttribute(a, 4)); nearParts.push(g); return g; };
   // pillars on the front / side arc (never between the rear camera and the hero)
   const pillarAngles = q === 'low' ? [-72, 72] : [-68, 68, -106, 106];
   const crystalParts = [];
@@ -608,13 +665,13 @@ export function createStage(ctx, shared) {
     const a = THREE.MathUtils.degToRad(deg); const R = 6.0;
     const h = 2.2 + ((i * 37) % 5) * 0.55;
     const pos = new THREE.Vector3(Math.sin(a) * R, 0, Math.cos(a) * R);
-    parts.push(pillarGeo(100 + i, pos, h));
+    nearProp(pillarGeo(100 + i, pos, h));
     const cr = crystalGeo(new THREE.OctahedronGeometry(0.32, 0), 0, [0.12, i * 1.7]);
     cr.scale(0.8, 1.7, 0.8); cr.translate(pos.x, h + 1.25, pos.z); crystalParts.push(cr);
   });
   // sakura trees framing the arena
-  parts.push(sakuraGeo(41, new THREE.Vector3(-4.3, -0.05, 5.0), 0.72));
-  parts.push(sakuraGeo(43, new THREE.Vector3(4.5, -0.05, 4.7), 0.66));
+  nearProp(sakuraGeo(41, new THREE.Vector3(-4.3, -0.05, 5.0), 0.72));
+  nearProp(sakuraGeo(43, new THREE.Vector3(4.5, -0.05, 4.7), 0.66));
   // floating rocks (with waterfalls on some)
   const ROCKS = [
     { p: [-17, 1.5, 18], R: 4.2, H: 7, fall: 1.6, tree: true },
@@ -631,8 +688,10 @@ export function createStage(ctx, shared) {
   const waterParts = [];
   ROCKS.forEach((rk, i) => {
     const pos = new THREE.Vector3(...rk.p);
-    parts.push(rockGeo(rk.R, rk.H, 200 + i, pos));
-    if (rk.tree) parts.push(sakuraGeo(300 + i, new THREE.Vector3(pos.x + rk.R * 0.2, pos.y + 0.1, pos.z - rk.R * 0.1), rk.R * 0.32));
+    const near = pos.length() < 26;   // close islands can get between a cinematic camera and the hero
+    const rg = rockGeo(rk.R, rk.H, 200 + i, pos);
+    if (rk.tree) { const tg = sakuraGeo(300 + i, new THREE.Vector3(pos.x + rk.R * 0.2, pos.y + 0.1, pos.z - rk.R * 0.1), rk.R * 0.32); if (near) nearProp(mergeGeometries([rg, tg])); else parts.push(rg, tg); }
+    else if (near) nearProp(rg); else parts.push(rg);
     if (rk.fall) {
       // waterfall leaving the rock lip on the side facing the hero, falling into the cloud sea
       const toO = new THREE.Vector3(-pos.x, 0, -pos.z).normalize();
@@ -689,6 +748,16 @@ export function createStage(ctx, shared) {
   inkMat.uniforms.uInk.value = ink;
   const outline = new THREE.Mesh(worldGeo, inkMat); outline.name = 'stageInk'; outline.frustumCulled = false;
   if (q !== 'low') object.add(outline);
+  // near props: own mesh + ink with the dither fade
+  const nearGeo = mergeGeometries(nearParts);
+  const nearMesh = new THREE.Mesh(nearGeo, nearMat); nearMesh.name = 'stageNearProps'; nearMesh.frustumCulled = false;
+  object.add(nearMesh);
+  const nearInkMat = inkMat.clone(); nearInkMat.uniforms = THREE.UniformsUtils.merge([inkMat.uniforms]); nearInkMat.uniforms.uInk.value = ink; nearInkMat.uniforms.uWidth = inkMat.uniforms.uWidth;
+  Object.assign(nearInkMat.uniforms, fadeU);
+  nearInkMat.vertexShader = inkMat.vertexShader.replace('#include <fog_pars_vertex>', '#include <fog_pars_vertex>' + PROP_FADE_VERT).replace('gl_Position = projectionMatrix * mvPosition;', 'gl_Position = projectionMatrix * mvPosition; vFade = propFade();');
+  nearInkMat.fragmentShader = inkMat.fragmentShader.replace('#include <fog_pars_fragment>', '#include <fog_pars_fragment>' + PROP_FADE_FRAG).replace('void main(){', 'void main(){ if (vFade > 0.002 && vFade * 1.02 > bayer4(gl_FragCoord.xy)) discard;');
+  const nearInk = new THREE.Mesh(nearGeo, nearInkMat); nearInk.name = 'stageNearInk'; nearInk.frustumCulled = false;
+  if (q !== 'low') object.add(nearInk);
 
   // platform top (tile texture)
   const topMat = new THREE.MeshToonMaterial({ map: platformTopTexture(), gradientMap: ramp });
@@ -795,6 +864,8 @@ export function createStage(ctx, shared) {
   // ---- state
   const st = { riftOpen: 1, riftOpenTgt: 1, act: 'title', pulse: 0, wave: 9, beatPrev: -1, overdrive: 0, intensity: 0, riftPulse: 0, flashRift: 0 };
   const camPos = new THREE.Vector3();
+  const focus = { override: null, sight: null, boss: null };
+  const _f = new THREE.Vector3();
 
   function setAct(act) {
     const key = act === undefined || act === null ? 'title' : String(act);
@@ -831,7 +902,7 @@ export function createStage(ctx, shared) {
     st.riftPulse *= Math.exp(-dt * 3);
     st.wave += dt * 2.2;
     const u = skyMat.uniforms;
-    u.uStars.value = cur.stars; u.uEclipse.value = cur.eclipse; u.uRays.value = cur.rays;
+    u.uStars.value = cur.stars; u.uEclipse.value = cur.eclipse; u.uRays.value = cur.rays; u.uMoon.value = cur.moon;
     u.uSunSize.value = 0.085 - cur.eclipse * 0.025;
     key.intensity = cur.keyI;
     fog.color.copy(cur.fog);
@@ -852,6 +923,15 @@ export function createStage(ctx, shared) {
     riftShardMat.uniforms.uGlow.value = 0.4 + st.riftPulse;
     riftCrystals.rotation.z = t * 0.05;
     if (ctx.camera) { ctx.camera.getWorldPosition(camPos); sky.position.copy(camPos); shafts.position.copy(camPos).addScaledVector(sunDir, 280); }
+    folU.uFolMix.value = cur.folMix;
+    // prop clearing focus: the hero's chest (or an override), plus the boss weak point sightline while it stands
+    if (focus.override) _f.copy(focus.override);
+    else { const h = ctx.hero?.bones?.hips; if (h) { h.getWorldPosition(_f); _f.y += 0.3; } else _f.set(0, 1.2, 0); }
+    fadeU.uFocus.value.set(_f.x, _f.y, _f.z, 1);
+    const b = focus.boss;
+    if (focus.sight) fadeU.uFocus2.value.set(focus.sight.x, focus.sight.y, focus.sight.z, 0.16);
+    else if (b && b.shown && b.state === 'active') fadeU.uFocus2.value.set(b.weakPoint.x, b.weakPoint.y, b.weakPoint.z, 0.16);
+    else fadeU.uFocus2.value.w = 0;
     shaftMat.uniforms.uI.value = 0.16 * cur.rays * (1 - cur.eclipse * 0.5);
     // petals: fewer embers early, more with intensity
     petalMat.uniforms.uWind.value.z = -1.6 - st.overdrive * 1.5;
@@ -868,8 +948,17 @@ export function createStage(ctx, shared) {
     object, rift: RIFT_POS.clone(), setAct, pulse, update, snap, setQuality,
     /** 0 = closed slit, 1 = fully open (the boss closes it while it stands behind). */
     setRiftOpen(v) { st.riftOpenTgt = v; },
+    /** Prop clearing: override the focus point (default: the hero's chest). null = back to the hero. */
+    setFocus(v) { focus.override = v ? (focus.override ?? new THREE.Vector3()).copy(v) : null; },
+    /** Prop clearing: extra sightline target kept clear (default: the boss weak point while it stands). */
+    setSightline(v) { focus.sight = v ? (focus.sight ?? new THREE.Vector3()).copy(v) : null; },
+    setBoss(b) { focus.boss = b; },
+    /** Prop clearing: fade every near prop whose bounds come within r metres of pos (e.g. the cinematic camera
+     *  position, or a point between camera and subject). setCameraClear(null) turns it off. Additive to the automatic
+     *  camera / hero-line / boss-sightline clearing, which is always on. */
+    setCameraClear(pos, r = 2.5) { if (pos) fadeU.uClear.value.set(pos.x, pos.y, pos.z, r); else fadeU.uClear.value.w = 0; },
     palette: cur, sunDir, fog,
-    parts: { sky, sea, puffs, world, top, crystals, waterfalls, runeInner, runeOuter, petals, rift, riftCrystals },
+    parts: { sky, sea, puffs, world, nearMesh, top, crystals, waterfalls, runeInner, runeOuter, petals, rift, riftCrystals },
     get act() { return st.act; },
     dispose() {
       object.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); const m = o.material; for (const v of Object.values(m.uniforms ?? {})) v.value?.isTexture && v.value.dispose(); m.map?.dispose(); m.dispose(); } });

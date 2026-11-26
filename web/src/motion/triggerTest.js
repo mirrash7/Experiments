@@ -6,15 +6,17 @@
 // 150 ms, 2 kicks: exactly 1 kickLeft + 1 kickRight, 3 squats: no punches/kicks, 4 jumps: 0 punches,
 // 5 T-pose: 0 punches, 6 wave: 0 punches. Phase changes teleport the synthetic pose (e.g. guard -> hands up), which
 // the light filter turns into a very fast arm raise: exactly the case that used to fire phantom double punches.
+// The second part (runRobustness, moveBench.js) runs every game move under realistic monocular noise.
 import { ActionDetector } from '../actions.js';
 import { SyntheticSource, SYN_PHASES } from '../sources/syntheticSource.js';
+import { runMoveBench, mergeBench, formatBench, benchFails } from './moveBench.js';
 
 const IMPULSES = ['punchLeft', 'punchRight', 'kickLeft', 'kickRight', 'jump'];
 
 /** Run `loops` synthetic loops (28 s each) at `rate` Hz with `noise` m keypoint noise. */
-export function runTriggerTest({ loops = 2, rate = 30, noise = 0, seed = 1, latencyMs = 20 } = {}) {
+export function runTriggerTest({ loops = 2, rate = 30, noise = 0, seed = 1, latencyMs = 20, Detector = ActionDetector } = {}) {
   const src = new SyntheticSource({ rate, noise: 0 });
-  const det = new ActionDetector();
+  const det = new Detector();
   let now = 0;
   det.clock = () => now;
   const events = [];
@@ -70,13 +72,44 @@ export function formatTriggerTest(r) {
   return [`loops=${r.loops} rate=${r.rate} noise=${r.noise}  ${r.ok ? 'PASS' : 'FAIL: ' + r.fails.join('; ')}`, ...rows].join('\n');
 }
 
-// node entry point
+// ---------------------------------------------------------------------------------------- robustness bench
+// Every game move under realistic single-webcam noise (moveBench.js): anisotropic keypoint noise, dropped frames,
+// occlusions, 25-30 Hz. Targets: >= 97 % detection per move in every config, <= 1 phantom per 100 moves.
+export const BENCH_CONFIGS = {
+  mild: { sxy: 0.01, sz: 0.03, rate: 30 },                       // 1 cm x/y, 3 cm depth
+  mid: { sxy: 0.015, sz: 0.05, rate: 30 },
+  harsh: { sxy: 0.02, sz: 0.08, rate: 25 },                      // 2 cm x/y, 8 cm depth, 25 Hz
+  upper: { sxy: 0.015, sz: 0.06, rate: 30, upperBody: true },    // legs never tracked
+  seated: { sxy: 0.015, sz: 0.06, rate: 30, seated: true },     // detector.seated: head-drop ducks only, no legs
+};
+
+/** Run the bench for every config (seeds x reps per move). Returns {configs: {name: result}, all, fails}. */
+export function runRobustness({ Detector = ActionDetector, seeds = [1, 2, 3], reps = 24, configs = BENCH_CONFIGS } = {}) {
+  const out = {}, fails = [];
+  for (const [name, cfg] of Object.entries(configs)) {
+    out[name] = mergeBench(seeds.map((seed) => runMoveBench({ Detector, reps, seed, ...cfg })));
+    for (const f of benchFails(out[name])) fails.push(`${name}: ${f}`);
+  }
+  return { configs: out, all: mergeBench(Object.values(out)), fails, ok: fails.length === 0 };
+}
+
+// node entry point:  node web/src/motion/triggerTest.js [--quick] [--full] [--detector=path/to/actions.js]
 if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === new URL(process.argv[1], 'file://').href) {
+  const args = process.argv.slice(2);
+  const detPath = args.find((a) => a.startsWith('--detector='))?.slice(11);
+  const Detector = detPath ? (await import(new URL(detPath, 'file://' + process.cwd() + '/').href)).ActionDetector : ActionDetector;
   let ok = true;
   for (const cfg of [{ noise: 0 }, { noise: 0.005, seed: 3 }, { noise: 0.01, seed: 7 }, { rate: 25, noise: 0.005, seed: 11 }]) {
-    const r = runTriggerTest({ loops: 2, ...cfg });
+    const r = runTriggerTest({ loops: 2, ...cfg, Detector });
     console.log(formatTriggerTest(r) + '\n');
     ok &&= r.ok;
   }
-  process.exit(ok ? 0 : 1);
+  const rb = runRobustness({ Detector, seeds: args.includes('--quick') ? [1] : [1, 2, 3] });
+  for (const [name, r] of Object.entries(rb.configs)) {
+    if (args.includes('--full')) console.log(formatBench(r, `[${name}] ${JSON.stringify(BENCH_CONFIGS[name])}`) + '\n');
+    else console.log(`[${name}] ${JSON.stringify(BENCH_CONFIGS[name])}: ${r.phantomsPer100.toFixed(2)} phantoms/100 moves`);
+  }
+  console.log('\n' + formatBench(rb.all, 'robustness, all configs'));
+  console.log(rb.ok ? '\nrobustness PASS' : '\nrobustness FAIL: ' + rb.fails.join('; '));
+  process.exit(ok && rb.ok ? 0 : 1);
 }

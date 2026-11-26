@@ -14,52 +14,120 @@ export const MOVE_OF = { striker: 'punch', crawler: 'kick', sweep: 'jump', scyth
 const TOKENS = { SL: ['striker', 'left'], SR: ['striker', 'right'], CL: ['crawler', 'left'], CR: ['crawler', 'right'], J: ['sweep', 'center'],
   D: ['scythe', 'center'], VL: ['volley', 'left'], VR: ['volley', 'right'], B: ['brute', 'center'], O: ['core', 'center'] };
 
-/** Per-act config: travel (beats from the rift to the hit point), telegraph lead (beats), phrases with difficulty 1..3. */
+/**
+ * Per-act config: travel (beats from the rift to the hit point), telegraph lead (beats), phrases with difficulty 1..3.
+ *   teach:  fixed phrases that ALWAYS open the act (whatever the seed / skill): they introduce the act's new mechanics.
+ *   finale: every act ends on a Spirit Core (the Breaklight blast is the recurring payoff, not a 2-minute wait).
+ * Phrase pools keep strikers well under half the notes; ActChart also caps the striker share (STRIKER_CAP).
+ */
 export const ACTS = [
-  { // ACT 1, amber dusk: strikes, a first kick and jump
-    name: 'ACT 1', sub: 'Dusk Rising', bars: 24, travel: 4, tele: 2,
-    intro: ['SL . . .', 'SR . . .'],
+  { // ACT 1, amber dusk: strikes, then kicks, jumps and ducks are introduced
+    name: 'ACT 1', sub: 'Dusk Rising', bars: 26, travel: 4, tele: 2,
+    teach: ['SL . SR .', 'CL . . .', 'SR . SL .', 'CR . . .', 'J . . .', '. . . .', 'D . . .', '. . . .'],
+    finale: ['O . . .', '. . . .'],
     phrases: [
-      { d: 1, bars: ['SL . . .', 'SR . . .'] },
-      { d: 1, bars: ['SL . SR .', 'SL . SR .'] },
-      { d: 1, bars: ['SR . . .', 'SL . SR? .'] },
-      { d: 2, bars: ['SR . SL .', 'J . . .'] },
-      { d: 2, bars: ['SL . SR? .', 'CL . . .'] },
-      { d: 2, bars: ['SR . SL? .', 'CR . . .'] },
-      { d: 2, bars: ['SL . SL? .', 'SR . SR? .'] },
-      { d: 3, bars: ['SL SR? SL .', 'J . . .'] },
+      { d: 1, bars: ['SL . . .', 'CR . . .'] },
+      { d: 1, bars: ['SR . . .', 'CL . . .'] },
+      { d: 1, bars: ['SL . SR .', 'J . . .'] },
+      { d: 2, bars: ['CL . . .', 'SR . SL? .'] },
+      { d: 2, bars: ['D . . .', 'SL . SR? .'] },
+      { d: 2, bars: ['SR . . .', 'J . . .'] },
+      { d: 2, bars: ['CR . . .', 'D . . .'] },
+      { d: 3, bars: ['SL . SR .', 'CL . CR? .'] },
+      { d: 3, bars: ['J . . .', 'SL SR? CR .'] },
     ],
   },
-  { // ACT 2, magenta: ducks, dodges and the first brute
-    name: 'ACT 2', sub: 'Crimson Tide', bars: 24, travel: 3.5, tele: 1.75,
-    intro: ['SL . SR .', 'D . . .'],
+  { // ACT 2, magenta: dodges and the first brute are introduced
+    name: 'ACT 2', sub: 'Crimson Tide', bars: 26, travel: 3.5, tele: 1.75,
+    teach: ['VL . . .', '. . . .', 'VR . . .', 'SL . SR .', 'B . . .', '. . . .', '. . . .', 'SL . SR .'],
+    finale: ['O . . .', '. . . .'],
     phrases: [
-      { d: 1, bars: ['SL . SR .', 'D . . .'] },
-      { d: 1, bars: ['VL . . .', 'VR . . .'] },
-      { d: 2, bars: ['SL SR? SL .', 'J . . .'] },
+      { d: 1, bars: ['VL . . .', 'SR . . .'] },            // dodge left-side orb, counter right
+      { d: 1, bars: ['VR . . .', 'SL . . .'] },
+      { d: 1, bars: ['D . . .', 'SL . SR .'] },            // duck, then a double jab
+      { d: 2, bars: ['J . . .', 'CL . CR? .'] },           // jump, then kicks on landing
       { d: 2, bars: ['B . . .', '. . . .'] },
-      { d: 2, bars: ['CL . CR? .', 'SL . SR .'] },
-      { d: 2, bars: ['D . . .', 'SL . SR? .'] },
+      { d: 2, bars: ['CL . . .', 'VR . . .'] },
+      { d: 2, bars: ['VL . VR? .', 'D . . .'] },
       { d: 3, bars: ['VR . SL .', 'VL . SR .'] },
-      { d: 3, bars: ['SL SR SL SR?', 'CR . . .'] },
+      { d: 3, bars: ['SL SR? CL .', 'J . . .'] },
     ],
   },
   { // ACT 3, violet night: everything, eighth-note punch runs, a Spirit Core finale
-    name: 'ACT 3', sub: 'Violet Night', bars: 24, travel: 3, tele: 1.5,
-    intro: ['SL . . . SR . . .', 'J . . . . . . .'],
+    name: 'ACT 3', sub: 'Violet Night', bars: 26, travel: 3, tele: 1.5,
+    teach: ['SL . SR . VL . . .', 'D . . . CR . . .', 'B . . . . . . .', '. . . . J . . .'],
     finale: ['O . . . . . . .', '. . . . . . . .'],
     phrases: [
       { d: 1, bars: ['SL . . . SR . . .', 'J . . . . . . .'] },
+      { d: 1, bars: ['VR . . . SL . . .', 'CR . . . . . . .'] },
       { d: 2, bars: ['SL . SR . SL . SR? .', 'D . . . . . . .'] },
       { d: 2, bars: ['VL . . . SR . SL .', 'D . . . . . . .'] },
-      { d: 2, bars: ['CL . . . CR . . .', 'SL . SR . J . . .'] },
+      { d: 2, bars: ['CL . . . CR . . .', 'VL . . . J . . .'] },
       { d: 2, bars: ['B . . . . . . .', '. . . . . . . .'] },
       { d: 3, bars: ['SL . SR . SL SR SL .', 'VR . . . VL . . .'] },
-      { d: 3, bars: ['SR SL SR . . . CL .', '. . . . J . . .'] },
-      { d: 3, bars: ['VR . SL SR VL . SR SL?', 'D . . . . . . .'] },
+      { d: 3, bars: ['D . . . CL . . .', '. . VR . . . J .'] },
+      { d: 3, bars: ['VR . SL SR VL . SR SL?', 'J . . . . . . .'] },
     ],
   },
 ];
+
+/** Max share of strikers in an act (counted over the notes kept so far, from the 6th note on). */
+export const STRIKER_CAP = 0.45;
+
+/**
+ * Act 0 "Awakening": the guided first minute, on the real music. Each section introduces one spirit type; the
+ * first note of a section WAITS (the field freezes with the spirit at its hit point and its prompt) until the player
+ * does the move once, then the rest of the section plays at tempo. After a wait note the next note is >= 6 beats
+ * later (travel 4 + margin), so nothing else is in flight while the field is frozen.
+ *   [beat in section, token, wait]
+ */
+export const AWAKEN = {
+  name: 'ACT 0', sub: 'Awakening', travel: 4, tele: 2,
+  sections: [
+    { id: 'punch', len: 26, notes: [[2, 'SL', 1], [8, 'SR', 1], [14, 'SL'], [16, 'SR'], [18, 'SL'], [20, 'SR']] },
+    { id: 'guard', len: 14, notes: [[6, 'B', 1]] },
+    { id: 'dodge', len: 16, notes: [[2, 'VL', 1], [8, 'VR'], [11, 'VL']] },
+    { id: 'duck', len: 14, notes: [[2, 'D', 1], [8, 'D']], seated: false },
+    { id: 'jump', len: 14, notes: [[2, 'J', 1], [8, 'J']], lower: true },
+    { id: 'kick', len: 16, notes: [[2, 'CL', 1], [8, 'CR'], [10, 'CL']], lower: true },
+    { id: 'blast', len: 14, notes: [[2, 'O', 1]] },
+  ],
+};
+/** Prompt shown while an Awakening spirit waits for its move. */
+export const AWAKEN_PROMPT = {
+  striker: { left: '◀ LEFT PUNCH', right: 'RIGHT PUNCH ▶' },
+  crawler: { left: '◀ LEFT KICK', right: 'RIGHT KICK ▶' },
+  sweep: 'JUMP!', scythe: 'DUCK!', volley: { left: 'LEAN RIGHT ▶', right: '◀ LEAN LEFT' },
+  brute: 'GUARD! fists up by your face', core: 'HANDS UP to charge… then PUSH!',
+};
+export const AWAKEN_HINT = {
+  punch: 'Punch the orange spirits: left lane = left hand', guard: 'Block the gold brute, then punch it 3 times',
+  dodge: 'Lean away from the yellow orbs', duck: 'Duck under the violet beam', jump: 'Jump the red floor beam',
+  kick: 'Kick the cyan crawlers', blast: 'Your Breaklight: both hands up, then push!',
+};
+
+/** Build the Awakening notes from beat `startBeat` (virtual timeline). Returns { notes, endBeat }. */
+export function awakeningNotes(startBeat, settings) {
+  const notes = [];
+  const upper = !!(settings.upperBodyOnly || settings.seated);
+  let cursor = startBeat;
+  for (const sec of AWAKEN.sections) {
+    if (sec.lower && upper) continue;
+    if (sec.seated === false && settings.seated) continue;
+    for (const [at, tok, wait] of sec.notes) {
+      const [type, side] = TOKENS[tok];
+      const n = { type, side, beat: cursor + at, opt: false, act: 'awaken', section: sec.id, waitFor: !!wait };
+      n.id = 0; n.teleBeats = AWAKEN.tele;
+      n.travel = type === 'brute' ? AWAKEN.travel + 2 : type === 'core' ? AWAKEN.travel + 1 : AWAKEN.travel;
+      n.spawnBeat = n.beat - n.travel;
+      n.move = MOVE_OF[type];
+      if (type === 'core') n.hover = 8;
+      notes.push(n);
+    }
+    cursor += sec.len;
+  }
+  return { notes, endBeat: cursor };
+}
 
 /** Minimum beats after a note of this type before the next required move (recovery), and for the next one. */
 const RECOVER = { striker: 0.5, crawler: 1.5, sweep: 2, scythe: 2, volley: 1, brute: 4, core: 8 };
@@ -104,10 +172,10 @@ export function fair(prev, n, act) {
   return gap >= need - 1e-6;
 }
 
-/** Upper-body-only substitution: no kicks or jumps (small rooms). */
-export function upperOnly(n, flip) {
+/** Upper-body-only substitution: no kicks or jumps (small rooms). Seated also turns ducks into leans. */
+export function upperOnly(n, flip, seated = false) {
   if (n.type === 'crawler') { n.type = 'striker'; return n; }
-  if (n.type === 'sweep') { n.type = 'volley'; n.side = flip ? 'left' : 'right'; return n; }
+  if (n.type === 'sweep' || (seated && n.type === 'scythe')) { n.type = 'volley'; n.side = flip ? 'left' : 'right'; return n; }
   return n;
 }
 
@@ -130,26 +198,37 @@ export class ActChart {
     this.flip = false;
     this.done = false;
     this.phraseIdx = 0;
+    this.teachIdx = 0;                              // teach bars emitted so far
+    this.strikers = 0;
+    this.upper = !!(settings.upperBodyOnly || settings.seated);
   }
   /** Beat the act's last note resolves (for transitions). */
   get lastBeat() { return this.last ? this.last.beat + (this.last.type === 'core' ? 8 : this.last.type === 'brute' ? 3 : 0) : this.cursor; }
 
   update(beatNow, skill = 0.7) {
     const horizon = beatNow + this.cfg.travel + 10;
+    const fin = this.cfg.finale;
     while (!this.done && this.cursor < horizon) {
       const remaining = (this.endBeat - this.cursor) / 4;
       let bars;
-      if (this.phraseIdx === 4 && remaining > 6) { this._reaction(); this.phraseIdx++; continue; }
-      if (this.phraseIdx === 0) bars = this.cfg.intro;
-      else if (this.cfg.finale && remaining < this.cfg.finale.length + 2) bars = this.cfg.finale;
+      if (this.teachIdx < this.cfg.teach.length) {          // fixed teaching phrases, 2 bars at a time
+        bars = this.cfg.teach.slice(this.teachIdx, this.teachIdx + 2);
+        this.teachIdx += bars.length;
+        this._emit(bars, skill, true);
+        this.phraseIdx++;
+        continue;
+      }
+      if (this.phraseIdx === this._reactAt() && remaining > fin.length + 4) { this._reaction(); this.phraseIdx++; continue; }
+      if (remaining < fin.length + 2) bars = fin;
       else bars = this._pick(skill).bars;
-      if (remaining < bars.length) { this.done = true; break; }
-      this._emit(bars, skill);
+      if (bars !== fin && remaining - bars.length < fin.length) bars = fin;
+      this._emit(bars, skill, bars === fin);
       this.phraseIdx++;
-      if (this.cfg.finale && bars === this.cfg.finale) this.done = true;
-      if (this.endBeat - this.cursor < 4) this.done = true;
+      if (bars === fin) this.done = true;
     }
   }
+  /** Phrase index of the reaction-test rest (right after the teaching phrases + 2). */
+  _reactAt() { return Math.ceil(this.cfg.teach.length / 2) + 2; }
 
   /** A 2-bar rest with one unannounced reaction-test striker at a random (unquantized) moment. */
   _reaction() {
@@ -172,13 +251,19 @@ export class ActChart {
     return ph[ph.length - 1];
   }
 
-  _emit(bars, skill) {
+  _emit(bars, skill, fixed = false) {
     const density = this.settings.adaptive ? Math.min(1, Math.max(0.15, 0.2 + skill * 0.9)) : 0.75;
     for (let b = 0; b < bars.length; b++) {
       for (const s of parseBar(bars[b])) {
         if (s.opt && this.rand() > density) continue;
         const n = { type: s.type, side: s.side, beat: this.cursor + b * 4 + s.at, opt: s.opt };
-        if (this.settings.upperBodyOnly) { upperOnly(n, this.flip); this.flip = !this.flip; }
+        if (this.upper) { upperOnly(n, this.flip, !!this.settings.seated); this.flip = !this.flip; }
+        // striker cap: an optional striker over the cap is dropped, a fixed one becomes a lane-matched alternative
+        if (n.type === 'striker' && !fixed && this.count >= 5 && (this.strikers + 1) / (this.count + 1) > STRIKER_CAP) {
+          if (n.opt) continue;
+          if (!this.upper) n.type = 'crawler';
+          else { n.type = 'volley'; n.side = n.side === 'left' ? 'right' : 'left'; }
+        }
         // no eighth notes before act 3: snap to the beat
         if (this.act < 2) n.beat = Math.round(n.beat);
         let ok = fair(this.last, n, this.act);
@@ -204,7 +289,9 @@ export class ActChart {
     n.travel = n.type === 'brute' ? c.travel + 2 : n.type === 'core' ? c.travel + 1 : c.travel;
     n.spawnBeat = n.beat - n.travel;
     n.move = MOVE_OF[n.type];
+    if (n.type === 'core') n.hover = 8;
     this.last = n; this.count++;
+    if (n.type === 'striker') this.strikers++;
     this.out.push(n);
   }
 }

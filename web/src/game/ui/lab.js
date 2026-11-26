@@ -167,7 +167,7 @@ const audio = {
 };
 const listeners = {};
 const bus = { on(t, cb) { (listeners[t] ||= new Set()).add(cb); return () => listeners[t].delete(cb); }, emit(t, d) { listeners[t]?.forEach((cb) => cb(d)); } };
-const settings = { tracker: 'demo', upperBodyOnly: Q.get('upper') === '1', difficulty: 'normal', volume: 0.8, judgeOffsetMs: 0, quality: 'high' };
+const settings = { tracker: 'demo', mode: 'showcase', seated: Q.get('seated') === '1', upperBodyOnly: Q.get('upper') === '1', difficulty: 'normal', volume: { master: 0.9, music: 0.8, sfx: 0.9 }, judgeOffsetMs: 0, quality: 'high', dev: { debug: Q.get('debug') === '1' } };
 const ctx = { THREE, renderer, camera, worldScene: scene, heroScene: scene, hero: null, motion: null, fx: null, audio, quality: { preset: 'high' }, settings, bus, time: { now: 0, dt: 0, beat: 0, act: 0 } };
 
 const lab = { ctx, sfxLog, ready: false, errors: [] };
@@ -201,8 +201,10 @@ const ev = (name, data) => { lab.events.push({ name, data, t: Math.round(perform
 function hudOff() { ui.hud.show(false); hudDemo(false); }
 const open = {
   boot: () => { hudOff(); setCam('orbit'); return ui.screens.boot({ current: settings.tracker, onTracker: (t) => { ev('tracker', t); settings.tracker = t; scr.setStatus?.(t === 'demo' ? 'Starting the demo player…' : 'Waiting for camera permission…', 'wait'); } }); },
-  calibrate: () => { hudOff(); setCam('front'); return ui.screens.calibrate({ onDone: (r) => { ev('calibrated', r); go('title'); } }); },
-  title: () => { hudOff(); setCam('orbit'); return ui.screens.title({ onPlay: () => { ev('play'); go('countdown'); }, onTutorial: () => { ev('tutorial'); go('tutorial'); }, onSettings: () => { ev('settings'); go('settings'); } }); },
+  calibrate: () => { hudOff(); setCam('front'); return ui.screens.calibrate({ silhouetteCanvas: lab.mirror ? fakeSil.canvas : null, onDone: (r) => { ev('calibrated', r); go('title'); } }); },
+  calibMirror: () => { lab.mirror = true; const r = open.calibrate(); lab.mirror = false; return r; },
+  clearSpace: () => { hudOff(); setCam('front'); return ui.screens.clearSpace({ autoContinue: lab.autoDrive, onDone: (r) => { ev('clearSpace', r); go('calibrate'); } }); },
+  title: () => { hudOff(); setCam('orbit'); return ui.screens.title({ best: 184230, onMode: (m) => ev('mode', m), onPlay: () => { ev('play'); go('countdown'); }, onTutorial: () => { ev('tutorial'); go('tutorial'); }, onSettings: () => { ev('settings'); go('settings'); } }); },
   tutorial: () => { hudOff(); setCam('gameplay'); return ui.screens.tutorial({ onDone: (r) => { ev('tutorialDone', r); go('title'); } }); },
   settings: () => { hudOff(); return ui.screens.settings({ settings, onChange: (k, v) => ev('setting', { k, v }), onClose: () => { ev('settingsClose'); go('title'); } }); },
   pause: () => { setCam('gameplay'); return ui.screens.pause({ reason: 'player-lost' }); },
@@ -214,7 +216,8 @@ const open = {
     return null;
   },
   hud: () => { ui.screens.hide(); setCam('gameplay'); ui.hud.show(true); hudDemo(true); return null; },
-  results: () => { hudOff(); setCam('front'); return ui.screens.results({ stats: fakeStats(), onReplay: () => ev('replay'), onAgain: () => { ev('again'); go('countdown'); }, onTitle: () => { ev('title'); go('title'); } }); },
+  results: () => { hudOff(); setCam('front'); const r = ui.screens.results({ stats: fakeStats(), onReplay: () => { ev('replay'); simReplay(); }, onAgain: () => { ev('again'); go('countdown'); }, onTitle: () => { ev('title'); go('title'); } }); setTimeout(simReplay, 1200); return r; },
+  resultsPlain: () => { hudOff(); setCam('front'); return ui.screens.results({ stats: fakeStats({ newBest: false, best: 201400, replay: null, body: { punchSpeed: 5.1, jumpHeight: 0, reactionMs: null, moves: 96, kcal: 18 } }), onAgain: () => go('countdown'), onTitle: () => go('title') }); },
   hide: () => { hudOff(); return ui.screens.hide(); },
 };
 let scr = null;
@@ -222,9 +225,39 @@ function go(name) { scr = open[name]?.() ?? null; lab.screen = name; autoBot(); 
 lab.go = go;
 
 function fakeStats(o = {}) {
-  return { score: 184230, maxCombo: 87, judgements: { perfect: 142, great: 61, good: 18, miss: 7 }, newBest: true,
-    body: { punchSpeed: 7.4, jumpHeight: 34, reactionMs: 212, moves: 236, kcal: 41 }, ...o };
+  return { score: 184230, maxCombo: 87, judgements: { perfect: 142, great: 61, good: 18, miss: 7 }, newBest: true, prevBest: 151870, mode: 'showcase',
+    replay: { seconds: 5.2, hits: 9, speed: 0.35 },
+    body: { punchSpeed: 7.4, jumpHeight: 34, reactionMs: 362, timingSdMs: 31, moves: 236, kcal: 41, moveCounts: { punch: 132, kick: 28, jump: 14, squat: 16, dodge: 22, guard: 18, blast: 6 } }, ...o };
 }
+// replay simulation (what CORE sends): bus 'replay' start → progress → end over ~5 s
+let replayTimer = null;
+function simReplay(seconds = 5) {
+  clearInterval(replayTimer);
+  const t0 = performance.now();
+  bus.emit('replay', { type: 'start', on: true, label: 'Best moment', speed: 0.35, hits: 9, seconds: 5.2 });
+  replayTimer = setInterval(() => {
+    const p = (performance.now() - t0) / (seconds * 1000);
+    if (p >= 1) { clearInterval(replayTimer); bus.emit('replay', { type: 'end', on: false }); return; }
+    bus.emit('replay', { type: 'progress', progress: p });
+  }, 100);
+}
+lab.simReplay = simReplay;
+// fake "Mirror Moment" silhouette (stands in for the CV team's segmentation canvas): a soft body mask from kp2d
+const fakeSil = { canvas: document.createElement('canvas') };
+fakeSil.canvas.width = 480; fakeSil.canvas.height = 270;
+fakeSil.draw = () => {
+  const c = fakeSil.canvas, g = c.getContext('2d'), f = motion.lastFrame;
+  g.clearRect(0, 0, c.width, c.height);
+  if (!f?.kp2d || !f.edges) return;
+  g.save(); g.lineCap = 'round'; g.lineJoin = 'round';
+  g.strokeStyle = 'rgba(255,120,230,0.9)'; g.shadowColor = '#ff4fd8'; g.shadowBlur = 18; g.lineWidth = c.height * 0.07;
+  g.beginPath();
+  for (const [a, b] of f.edges) { const A = f.kp2d[a], B = f.kp2d[b]; if (!A || !B) continue; g.moveTo(A.x * c.width, A.y * c.height); g.lineTo(B.x * c.width, B.y * c.height); }
+  g.stroke();
+  const nose = f.kp2d[0]; if (nose) { g.fillStyle = 'rgba(255,120,230,0.9)'; g.beginPath(); g.arc(nose.x * c.width, nose.y * c.height, c.height * 0.055, 0, 7); g.fill(); }
+  g.restore();
+};
+lab.fakeSil = fakeSil;
 lab.fakeStats = fakeStats;
 
 // tutorial / calibration auto-drive: the bot performs whatever the screen asks for
@@ -234,6 +267,7 @@ function autoBot() {
   const b = lab.bot; if (!b || !lab.autoDrive) return;
   const s = ui.screens.current;
   if (s === 'calibrate') b.mode = 'tpose';
+  else if (s === 'clearSpace') b.mode = 'still';
   else if (s === 'tutorial') b.mode = DRILL_MODE[scr?.drill] || 'guard';
   else if (s === 'title' || s === 'boot' || s === 'settings' || s === 'results') { if (!['point', 'wave', 'punch'].includes(b.mode)) b.mode = 'wave'; }
 }
@@ -353,11 +387,16 @@ const H = (t) => { const e = document.createElement('h4'); e.textContent = t; re
 const info = document.createElement('pre');
 const title = H('UI lab ▾'); title.onclick = () => panel.classList.toggle('min');
 panel.append(title,
-  H('Screens'), row(...['boot', 'calibrate', 'title', 'tutorial', 'settings', 'pause', 'pauseUser', 'countdown', 'hud', 'results', 'hide'].map((n) => B(n, () => go(n)))),
+  H('Screens'), row(...['boot', 'clearSpace', 'calibrate', 'title', 'tutorial', 'settings', 'pause', 'pauseUser', 'countdown', 'hud', 'results', 'hide'].map((n) => B(n, () => go(n)))),
   H('HUD tests'), row(B('banner', () => ui.hud.banner('WARNING', 'ECLIPSE WARDEN APPROACHES')), B('prompt', () => ui.hud.prompt(ui.hud.state.prompt ? null : 'JUMP!')),
     B('perfect', () => ui.hud.judgement(heroScreenPos('right'), 'perfect', { errMs: 12 })), B('miss', () => ui.hud.judgement(heroScreenPos('left'), 'miss')),
     B('overdrive', () => ui.hud.setFlow(1, !ui.hud.state.overdrive)), B('hurt', () => ui.hud.setHealth(Math.max(0, (ui.hud.state.health || 5) - 1), 5)),
-    B('dist', () => ui.hud.distance(ui.hud.state.distance ? null : 'too-close'))),
+    B('dist', () => ui.hud.distance(ui.hud.state.distanceRaw ? null : 'too-close')),
+    B('act0', () => ui.hud.prompt(ui.hud.state.prompt ? null : 'LEFT PUNCH', ui.hud.state.prompt ? { success: true } : { move: 'punchLeft', wait: true, kicker: 'AWAKENING · 1 / 7' })),
+    B('collide', () => { ui.hud.banner('WEAK POINT!', 'Charge your Breaklight'); ui.hud.prompt('HANDS UP — CHARGE!'); ui.hud.distance('too-close'); ui.hud.banner('OVERDRIVE!', 'Double points'); })),
+  row(B('clearSpace', () => go('clearSpace')), B('calib+mirror', () => go('calibMirror')), B('seated', () => { settings.seated = !settings.seated; renderInfo(); }), B('resultsPlain', () => go('resultsPlain')),
+    B('photo', () => { const c = document.createElement('canvas'); c.width = 300; c.height = 400; const g = c.getContext('2d'); const gr = g.createLinearGradient(0, 0, 0, 400); gr.addColorStop(0, '#ff4fd8'); gr.addColorStop(1, '#4f6bff'); g.fillStyle = gr; g.fillRect(0, 0, 300, 400); g.fillStyle = '#fff'; g.font = '700 28px sans-serif'; g.fillText('PHOTO CARD', 60, 210); scr?.setPhotoCard?.({ node: c, caption: 'Victory pose · S rank' }); }),
+    B('photo…', () => scr?.setPhotoCard?.({ pending: true }))),
   H('Bot player'), row(...['loop', 'wave', 'punch', 'guard', 'still', 'tpose', 'blast', 'guardPulse', 'dodge', 'kick', 'jump', 'squat'].map((m) => B(m, () => { if (lab.bot) { lab.bot.mode = m; lab.aim = null; renderInfo(); } }))),
   row(B('aim PLAY', () => lab.pointAt('[data-ui-button="play"]')), B('aim TUTORIAL', () => lab.pointAt('[data-ui-button="tutorial"]')), B('aim SETTINGS', () => lab.pointAt('[data-ui-button="settings"]'))),
   row(...[null, 'tooClose', 'tooFar', 'offLeft', 'offRight'].map((d) => B(d || 'in view', () => { if (lab.bot) lab.bot.dist = d; renderInfo(); })), B('lose/find', () => { if (lab.bot) lab.bot.lost = !lab.bot.lost; renderInfo(); })),
@@ -384,6 +423,7 @@ function frame() {
   hero.update(dt);
   if (CAMS[camMode].orbit) { orbitT += dt * 0.12; const r = 4.4; camera.position.set(Math.sin(orbitT) * r * 0.6, 1.6, Math.cos(orbitT) * r); camera.lookAt(CAMS.orbit.look); }
   aimStep();
+  if (ui.screens.current === 'calibrate') fakeSil.draw();
   if (ui.screens.current === 'tutorial') autoBot();
   ui.update(dt);
   renderer.render(scene, camera);

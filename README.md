@@ -93,7 +93,7 @@ Trigger names describe the player's own body: `punchLeft` means your left hand, 
 ## Setup after cloning
 
 ```bash
-cd web && npm install && mkdir -p public/models public/mediapipe && cp -R node_modules/@mediapipe/tasks-vision/wasm public/mediapipe/ && curl -sSL -o public/models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task
+cd web && npm install && mkdir -p public/models public/mediapipe && cp -R node_modules/@mediapipe/tasks-vision/wasm public/mediapipe/ && curl -sSL -o public/models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task && curl -sSL -o public/models/pose_landmarker_lite.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
 ```
 
 The InstantHMR server venv is created with `uv` (Python 3.11) from `server/requirements.txt`. Model weights download from Hugging Face on first run.

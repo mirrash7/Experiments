@@ -8,6 +8,12 @@
 // (start = noteTime + LEAD_MS[move] - detectDelay[kind]). detectDelay (motion start -> detector capture time) is
 // learned online from the detector's own events, so the bot stays on time whatever the detector thresholds are.
 // ?botSkill=0..1 (default 1) skips notes / adds timing error, ?botJitter=ms (default 22) gaussian timing noise.
+//
+// Modes (getMode()): 'play' reads the chart; 'tpose' strikes the calibration T-pose; 'idle' guard stance;
+// 'drill:<id>' performs a tutorial drill on a loop (punch / kick / jump / duck / dodge / guard / blast), so the
+// no-camera demo player can show calibration and the tutorial. Awakening spirits that wait at their hit point
+// (isWaiting(n)) are answered with a human-like ~0.5 s reaction, and retried if a skipped / failed attempt leaves
+// the spirit waiting.
 import * as THREE from 'three';
 import { SyntheticSource } from '../../sources/syntheticSource.js';
 import { LEAD_MS } from './settings.js';
@@ -27,7 +33,7 @@ const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
 const UPPER = ['leftShoulder', 'rightShoulder', 'leftElbow', 'rightElbow', 'leftWrist', 'rightWrist', 'leftHand', 'rightHand', 'neck', 'nose', 'leftEar', 'rightEar'];
 
 /** Motion length (s) per bot action kind. */
-const DUR = { punch: 0.45, kick: 1.0, jump: 1.0, squat: 0, lean: 0, guard: 0, charge: 0, tpose: 0 };
+const DUR = { punch: 0.45, kick: 1.0, jump: 1.0, squat: 0, lean: 0, guard: 0, charge: 0, tpose: 0, rest: 0 };
 
 export class AutoplaySource extends SyntheticSource {
   /**
@@ -36,10 +42,14 @@ export class AutoplaySource extends SyntheticSource {
    * @param {function} o.getNotes () => iterable of upcoming notes (pending + live)
    * @param {function} o.getMode  () => 'idle' | 'tpose' | 'play'
    */
-  constructor({ clock, getNotes, getMode, skill = 1, jitterMs = 22, rate = 30, latencyMs = 45 } = {}) {
+  constructor({ clock, getNotes, getMode, skill = 1, jitterMs = 22, rate = 30, latencyMs = 45, noteTime = null, isWaiting = null, model = null } = {}) {
     super({ rate, latencyMs, noise: 0.002 });
-    this.model = 'Autoplay bot (reads the chart)';
+    this.model = model || 'Autoplay bot (reads the chart)';
     Object.assign(this, { clock, getNotes, getMode, skill, jitterMs });
+    this.noteTime = noteTime ?? ((n) => this.clock.timeAtBeat(n.beat));   // song seconds of a note's hit
+    this.isWaiting = isWaiting ?? (() => false);
+    this.waitTry = new Map();             // note id -> perf ms of the last attempt at a waiting spirit
+    this._drill = { id: null, next: 0, i: 0 };
     this.plan = [];                       // {kind, side, t0 (perf ms), hold (s), noteId}
     this.planned = new Set();
     // motion start -> detector capture time (ms), learned online
@@ -77,8 +87,18 @@ export class AutoplaySource extends SyntheticSource {
     const notes = this.getNotes?.();
     if (!notes) return;
     for (const n of notes) {
-      if (n.resolved || this.planned.has(n.id) || !n.id) continue;
-      const tNote = this.clock.toPerf(this.clock.timeAtBeat(n.beat));
+      if (n.resolved || !n.id) continue;
+      if (this.isWaiting(n)) {                          // a spirit frozen at its hit point: react, retry after 2.2 s
+        const last = this.waitTry.get(n.id) ?? 0;
+        if (nowPerf - last < 2200 || (this.planned.has(n.id) && nowPerf - last < 2200)) continue;
+        if (this.plan.some((p) => p.noteId === n.id && p.t0 + p.dur * 1000 > nowPerf)) continue;
+        this.waitTry.set(n.id, nowPerf);
+        this.planned.add(n.id);
+        this._planMove(n, nowPerf + 450 + this._rand() * 150 + (LEAD_MS[n.move] ?? 0) + (this.delay[n.move === 'dodge' ? 'lean' : n.move] ?? 0), nowPerf, 0, true);
+        continue;
+      }
+      if (this.planned.has(n.id)) continue;
+      const tNote = this.clock.toPerf(this.noteTime(n));
       if (n.react) {
         if (!n.cuePerf) continue;                       // waits for the cue to appear, then reacts
         this.planned.add(n.id);
@@ -90,23 +110,44 @@ export class AutoplaySource extends SyntheticSource {
       this.stats.planned++;
       if (this.skill < 1 && this._rand() > this.skill) { this.stats.skipped++; continue; }
       const jit = this._gauss() * this.jitterMs * (this.skill < 1 ? 2 - this.skill : 1);
-      const lead = LEAD_MS[n.move] ?? 0;
-      switch (n.move) {
-        case 'punch': this._push({ kind: 'punch', side: n.side, t0: tNote + lead - this.delay.punch + jit, noteId: n.id }); break;
-        case 'kick': this._push({ kind: 'kick', side: n.side, t0: tNote + lead - this.delay.kick + jit, noteId: n.id }); break;
-        case 'jump': this._push({ kind: 'jump', t0: tNote + lead - this.delay.jump + jit, noteId: n.id }); break;
-        case 'squat': this._push({ kind: 'squat', t0: tNote - this.delay.squat - 140 + jit, hold: 0.5, noteId: n.id }); break;
-        case 'dodge': this._push({ kind: 'lean', side: n.side === 'left' ? 'right' : 'left', t0: tNote - this.delay.lean - 140 + jit, hold: 0.5, noteId: n.id }); break;
-        case 'guard': {
-          const bd = this.clock.beatDur * 1000;
-          this._push({ kind: 'guard', t0: tNote - 450, hold: 0.8, noteId: n.id });
-          for (let i = 0; i < 3; i++) this._push({ kind: 'punch', side: i % 2 ? 'right' : 'left', t0: tNote + bd * (0.75 + i * 0.6) - this.delay.punch, noteId: n.id });
-          break;
-        }
-        case 'blast': this._push({ kind: 'charge', t0: Math.max(nowPerf, tNote - 200), hold: 1.35, noteId: n.id }); break;
-        default: break;
-      }
+      this._planMove(n, tNote, nowPerf, jit, false);
     }
+  }
+  /** Plan the motion for note `n` so its detection lands on `tNote` (perf ms). */
+  _planMove(n, tNote, nowPerf, jit, waiting) {
+    const lead = LEAD_MS[n.move] ?? 0;
+    switch (n.move) {
+      case 'punch': this._push({ kind: 'punch', side: n.side, t0: tNote + lead - this.delay.punch + jit, noteId: n.id }); break;
+      case 'kick': this._push({ kind: 'kick', side: n.side, t0: tNote + lead - this.delay.kick + jit, noteId: n.id }); break;
+      case 'jump': this._push({ kind: 'jump', t0: tNote + lead - this.delay.jump + jit, noteId: n.id }); break;
+      case 'squat': this._push({ kind: 'squat', t0: tNote - this.delay.squat - 90 + jit, hold: 0.5, noteId: n.id }); break;
+      case 'dodge': this._push({ kind: 'lean', side: n.side === 'left' ? 'right' : 'left', t0: tNote - this.delay.lean - 90 + jit, hold: 0.5, noteId: n.id }); break;
+      case 'guard': {
+        const bd = this.clock.beatDur * 1000;
+        const g0 = tNote - 120 - this.delay.guard + jit;
+        // relax the arms first (the idle stance is a boxing guard), then raise the guard on the cue
+        this._push({ kind: 'rest', t0: g0 - 650, hold: 0.45, noteId: n.id });
+        this._push({ kind: 'guard', t0: g0, hold: waiting ? 0.9 : 0.6, noteId: n.id });
+        const p0 = waiting ? g0 + 1100 : tNote + bd * 0.75;
+        for (let i = 0; i < 3; i++) this._push({ kind: 'punch', side: i % 2 ? 'right' : 'left', t0: p0 + bd * i * 0.6 - this.delay.punch, noteId: n.id });
+        break;
+      }
+      case 'blast': this._push({ kind: 'charge', t0: Math.max(nowPerf, tNote - 200), hold: 1.35, noteId: n.id }); break;
+      default: break;
+    }
+  }
+
+  /** Tutorial drill loop: one rep of the drill's move every ~2 s. */
+  _planDrill(id, nowPerf) {
+    const D = this._drill;
+    if (D.id !== id) { D.id = id; D.next = nowPerf + 900; D.i = 0; }
+    if (nowPerf < D.next) return;
+    const side = D.i++ % 2 ? 'right' : 'left';
+    const kinds = { punch: ['punch', 0, 1.1], kick: ['kick', 0, 1.9], jump: ['jump', 0, 2.0], duck: ['squat', 0.6, 2.0], dodge: ['lean', 0.6, 2.0], guard: ['guard', 1.1, 2.4], blast: ['charge', 1.35, 3.6] };
+    const k = kinds[id];
+    if (!k) { D.next = nowPerf + 1000; return; }
+    this._push({ kind: k[0], side, t0: nowPerf, hold: k[1] || undefined, noteId: 0 });
+    D.next = nowPerf + k[2] * 1000;
   }
   _push(p) {
     p.dur = p.kind === 'charge' ? p.hold + 0.45 : (DUR[p.kind] || 0) + (p.hold ? p.hold + 0.5 : 0);
@@ -130,7 +171,9 @@ export class AutoplaySource extends SyntheticSource {
     const tc = now - this.latencyMs;
     this._planAhead(now);
     while (this.plan.length && this.plan[0].t0 + this.plan[0].dur * 1000 < tc - 3000) this.plan.shift();
-    const mode = this.getMode?.() ?? 'play';
+    let mode = this.getMode?.() ?? 'play';
+    if (typeof mode === 'string' && mode.startsWith('drill:')) { this._planDrill(mode.slice(6), now); mode = 'play'; }
+    else this._drill.id = null;
     const tSec = tc / 1000;
     const base = 400 + (tSec % 4);       // keep breathing / sway continuous: SyntheticSource uses t for both
     let out;
@@ -149,6 +192,7 @@ export class AutoplaySource extends SyntheticSource {
         case 'tpose': this.phase = 5; out = this.pose(400); break;
         case 'lean': { this.phase = 0; out = this.pose(base); this._lean(out, a, tau); break; }
         case 'guard': { this.phase = 0; out = this.pose(base); this._guard(out, a, tau); break; }
+        case 'rest': { this.phase = 0; out = this.pose(base); this._rest(out, a, tau); break; }
         case 'charge': { this.phase = 0; out = this.pose(base); this._charge(out, a, tau); break; }
         default: this.phase = 0; out = this.pose(base);
       }
@@ -182,6 +226,15 @@ export class AutoplaySource extends SyntheticSource {
       const sg = s === 'left' ? 1 : -1, S = J[s + 'Shoulder'];
       const w = J[s + 'Wrist'].clone().lerp(V(S.x - sg * 0.06, J.nose.y - 0.08, S.z + 0.24), k);
       this._setWrist(out, s, w, V(sg * 0.4, -1, -0.25));
+    }
+  }
+  _rest(out, a, tau) {
+    // arms relaxed down by the hips (no guard)
+    const J = out.joints, k = sm(0, 0.15, tau);
+    for (const s of ['left', 'right']) {
+      const sg = s === 'left' ? 1 : -1, S = J[s + 'Shoulder'], H = J[s + 'Hip'];
+      const w = J[s + 'Wrist'].clone().lerp(V(S.x + sg * 0.08, H.y + 0.02, S.z + 0.08), k);
+      this._setWrist(out, s, w, V(sg * 0.2, -0.3, -1));
     }
   }
   _charge(out, a, tau) {

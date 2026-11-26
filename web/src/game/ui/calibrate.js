@@ -1,69 +1,100 @@
-// Calibration screen: "Strike the pose". A glowing T-pose silhouette fills from the feet up while the player
-// holds a matching T-pose for 1 s. The player's live skeleton is drawn inside the silhouette so they can see
-// themselves line up; each arm lights when it matches. Distance guidance (step back / forward, move left /
-// right) comes from the 2D keypoint bounds, with a mini camera-view map. On success the motion pipeline re-runs
-// its standing calibration (floor, facing, player size) while the player is still standing in the pose.
+// Calibration screen: "Strike the pose". A smooth, glowing T-pose silhouette (filled SVG body parts) fills from the
+// feet up while the player holds a matching T-pose for 1 s; each limb lights up as it matches, and one clean ring
+// gauge shows the hold progress. Inside the guide the player sees themselves: the live camera silhouette from the CV
+// team (`silhouetteCanvas`, fitted to the guide by the tracked keypoints) and/or the glowing tracked skeleton.
+// Distance guidance (step back / forward, move left / right) comes from the 2D keypoint bounds, with a mini camera
+// view. On success the motion pipeline re-runs its standing calibration while the player still holds the pose.
+//
+//   screens.calibrate({ onDone, recalibrate = true, silhouetteCanvas?, silhouetteMirrored = true, seated? })
+//   handle: { progress, finish(), setSilhouetteCanvas(canvas|null, { mirrored }) }
+//   silhouetteCanvas: any canvas/video/img covering the FULL camera frame (same framing as the tracker's kp2d).
+//   mirrored = true means it is already in selfie view (the player's left on screen left).
 import { h, uiButton, freshFrame, drawSkeleton, measureDistance, DISTANCE_TEXT, kpBounds, kpIsSelfie, clamp01 } from './body.js';
 
 const HOLD_S = 1.0;
-// T-pose silhouette in a 400 x 460 box (front view; the player's left is screen left like a mirror)
+const mirror = (d) => d.replace(/(-?[\d.]+),(-?[\d.]+)/g, (_, x, y) => `${+(400 - x).toFixed(1)},${y}`);
+// T-pose silhouette in a 400 x 460 box (front view, the player's left on screen left like a mirror)
+const ARM_L = 'M156,94 C130,95 100,97 72,99 L46,100 C35,99 25,100 18,103 C11,106 11,116 18,118 C25,120 35,120 46,118 L72,118 C100,120 128,125 152,131 Z';
+const LEG_L = 'M160,250 C157,282 160,312 166,342 C169,372 171,402 173,428 C169,435 160,441 155,445 C153,451 170,453 187,451 C191,447 193,440 193,430 C195,400 197,370 198,342 C200,312 200,290 200,262 Z';
 const SIL = {
-  head: 'M200 18a30 34 0 1 1 -0.1 0z',
-  body: 'M168 84 Q200 76 232 84 L236 150 Q240 200 232 236 L226 250 L174 250 L168 236 Q160 200 164 150 Z',
-  armL: 'M168 88 L60 92 Q22 94 14 100 Q22 112 60 112 L170 118 Z',
-  armR: 'M232 88 L340 92 Q378 94 386 100 Q378 112 340 112 L230 118 Z',
-  legL: 'M176 246 L198 248 L196 340 L192 440 L166 444 L164 340 Z',
-  legR: 'M224 246 L202 248 L204 340 L208 440 L234 444 L236 340 Z',
+  head: 'M200,12 C217,12 227,27 227,44 C227,63 215,75 200,75 C185,75 173,63 173,44 C173,27 183,12 200,12 Z',
+  body: 'M189,72 L211,72 L213,86 C226,88 240,90 252,96 C259,101 259,113 256,125 C250,142 244,162 240,186 C238,200 236,210 238,222 C242,236 245,250 243,264 L157,264 C155,250 158,236 162,222 C164,210 162,200 160,186 C156,162 150,142 144,125 C141,113 141,101 148,96 C160,90 174,88 187,86 Z',
+  armL: ARM_L, armR: mirror(ARM_L), legL: LEG_L, legR: mirror(LEG_L),
 };
-const SIL_BOX = { x: 14, y: 18, w: 372, h: 426, cx: 200, top: 18, bottom: 444 };
+const SIL_BOX = { cx: 200, top: 12, bottom: 452 };
 
-export function calibrateScreen(ctx, ui, { onDone, recalibrate = true } = {}) {
+export function calibrateScreen(ctx, ui, { onDone, recalibrate = true, silhouetteCanvas = null, silhouetteMirrored = true, seated } = {}) {
+  const upperOnly = () => !!(seated ?? ctx.settings?.seated) || !!ctx.settings?.upperBodyOnly;
+  const isSeated = !!(seated ?? ctx.settings?.seated);
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', '0 0 400 460');
   svg.setAttribute('class', 'bl-sil');
-  const all = Object.values(SIL).join(' ');
+  const upperD = [SIL.head, SIL.body, SIL.armL, SIL.armR].join(' ');
+  const all = isSeated ? upperD : Object.values(SIL).join(' ');
+  const part = (k, extra = '') => `<path d="${SIL[k]}" class="bl-sil-part p-${k} ${extra}"/>`;
   svg.innerHTML = `
     <defs>
       <linearGradient id="blSilFill" x1="0" y1="1" x2="0" y2="0">
-        <stop offset="0" stop-color="#ff4fd8"/><stop offset=".55" stop-color="#8b5cff"/><stop offset="1" stop-color="#4ff3ff"/>
+        <stop offset="0" stop-color="#ff4fd8"/><stop offset=".5" stop-color="#8b5cff"/><stop offset="1" stop-color="#4ff3ff"/>
       </linearGradient>
+      <radialGradient id="blSilBase" cx=".5" cy=".35" r=".7"><stop offset="0" stop-color="#8b5cff" stop-opacity=".34"/><stop offset="1" stop-color="#2a1260" stop-opacity=".18"/></radialGradient>
+      <clipPath id="blSilShape"><path d="${all}"/></clipPath>
       <clipPath id="blSilClip"><rect class="bl-sil-cliprect" x="0" y="460" width="400" height="460"/></clipPath>
-      <filter id="blSilGlow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="blSilGlow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="blSilSoft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="14"/></filter>
     </defs>
+    <ellipse cx="200" cy="452" rx="92" ry="9" class="bl-sil-floor"/>
+    <path d="${all}" class="bl-sil-halo" filter="url(#blSilSoft)"/>
     <path d="${all}" class="bl-sil-base"/>
     <g clip-path="url(#blSilClip)"><path d="${all}" fill="url(#blSilFill)" class="bl-sil-fill"/></g>
-    <path d="${SIL.armL}" class="bl-sil-part p-armL"/><path d="${SIL.armR}" class="bl-sil-part p-armR"/>
-    <path d="${SIL.head} ${SIL.body} ${SIL.legL} ${SIL.legR}" class="bl-sil-part p-body"/>
-    <path d="${all}" class="bl-sil-line" filter="url(#blSilGlow)"/>`;
+    <g clip-path="url(#blSilShape)"><rect class="bl-sil-scan" x="0" y="-40" width="400" height="40"/></g>
+    ${part('head')}${part('body')}${part('armL')}${part('armR')}${part('legL', isSeated ? 'is-optional' : '')}${part('legR', isSeated ? 'is-optional' : '')}
+    <path d="${all}" class="bl-sil-line" filter="url(#blSilGlow)"/>
+    ${isSeated ? `<path d="${SIL.legL} ${SIL.legR}" class="bl-sil-legs-opt"/>` : ''}`;
+  if (isSeated) svg.classList.add('is-seated');
   const clipRect = svg.querySelector('.bl-sil-cliprect');
-  const parts = { armL: svg.querySelector('.p-armL'), armR: svg.querySelector('.p-armR'), body: svg.querySelector('.p-body') };
-  const live = h('canvas', { class: 'bl-sil-live', width: 400, height: 460 });
+  const P = (k) => svg.querySelector('.p-' + k);
+  const parts = { head: P('head'), body: P('body'), armL: P('armL'), armR: P('armR'), legL: P('legL'), legR: P('legR') };
+  const live = h('canvas', { class: 'bl-sil-live', width: 800, height: 920 });
   const lg = live.getContext('2d');
-  const pct = h('div', { class: 'bl-calib-pct' }, '0');
+  lg.scale(2, 2);
+
+  // ring gauge (one element: number + % inline)
+  const R = 44, C = 2 * Math.PI * R;
+  const ring = h('div', { class: 'bl-calib-ring', html: `<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="${R}" class="bl-ring-track"/><circle cx="50" cy="50" r="${R}" class="bl-ring-fill" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${C.toFixed(2)}" transform="rotate(-90 50 50)"/></svg>` });
+  const ringFill = ring.querySelector('.bl-ring-fill');
+  const pctNum = h('b', {}, '0');
+  ring.append(h('div', { class: 'bl-ring-label' }, h('span', { class: 'bl-ring-num' }, pctNum, h('i', {}, '%')), h('small', {}, 'HOLD')));
+
   const state = h('div', { class: 'bl-calib-state' }, 'SEARCHING FOR YOU…');
   const guide = h('div', { class: 'bl-calib-guide' });
   const mini = h('canvas', { class: 'bl-calib-mini', width: 192, height: 120 });
   const mg = mini.getContext('2d');
+  const liveTag = h('div', { class: 'bl-calib-livetag' }, h('i'), 'LIVE MIRROR');
   const checks = {
-    frame: h('li', {}, 'Whole body in view'),
+    frame: h('li', {}, isSeated ? 'Head, arms and hips in view' : 'Whole body in view'),
     armL: h('li', {}, 'Left arm straight out'),
     armR: h('li', {}, 'Right arm straight out'),
     still: h('li', {}, 'Hold it for 1 second'),
   };
-  const node = h('div', { class: 'bl-calib' },
+  const skip = uiButton('SKIP', () => finish(true), { cls: 'is-small', id: 'calib-skip' });
+  skip.setAttribute('data-ui-mouseonly', '');
+  const node = h('div', { class: 'bl-calib' + (isSeated ? ' is-seated' : '') },
     h('div', { class: 'bl-calib-side' },
-      h('div', { class: 'bl-kicker' }, 'CALIBRATION'),
+      h('div', { class: 'bl-kicker' }, isSeated ? 'CALIBRATION · SEATED' : 'CALIBRATION'),
       h('h1', { class: 'bl-h1' }, 'STRIKE', h('br'), 'THE POSE'),
-      h('p', { class: 'bl-calib-text' }, 'Stand tall, arms straight out to the sides. Match the glowing silhouette and hold.'),
+      h('p', { class: 'bl-calib-text' }, isSeated ? 'Sit tall, arms straight out to the sides. Match the glowing silhouette and hold.' : 'Stand tall, arms straight out to the sides. Match the glowing silhouette and hold.'),
       h('ul', { class: 'bl-checks' }, Object.values(checks)),
       h('div', { class: 'bl-calib-minibox' }, h('span', {}, 'CAMERA VIEW'), mini)),
-    h('div', { class: 'bl-calib-stage' }, svg, live, h('div', { class: 'bl-calib-meter' }, pct, h('small', {}, '%')), state),
+    h('div', { class: 'bl-calib-stage' }, svg, live, liveTag, ring, state),
     guide,
-    h('div', { class: 'bl-calib-skip' }, (() => { const b = uiButton('SKIP', () => finish(true), { cls: 'is-small', id: 'calib-skip' }); b.setAttribute('data-ui-mouseonly', ''); return b; })()));
+    h('div', { class: 'bl-calib-skip' }, skip));
 
   let progress = 0, done = false, t = 0, guideState;
-  const upperOnly = () => !!ctx.settings?.upperBodyOnly;
+  let silCanvas = silhouetteCanvas, silMirrored = silhouetteMirrored;
+  const setSil = (c, { mirrored = true } = {}) => { silCanvas = c || null; silMirrored = mirrored; node.classList.toggle('has-mirror', !!silCanvas); };
+  setSil(silhouetteCanvas, { mirrored: silhouetteMirrored });
 
   function finish(skipped = false) {
     if (done) return;
@@ -71,9 +102,11 @@ export function calibrateScreen(ctx, ui, { onDone, recalibrate = true } = {}) {
     node.classList.add('is-done');
     state.textContent = skipped ? 'SKIPPED' : 'CALIBRATED!';
     if (!skipped) {
+      progress = 1; setProgress(1);
       try { ctx.audio?.sfx?.('perfect'); } catch { /* optional */ }
       if (recalibrate) { try { ctx.motion?.calibrate?.(); } catch (e) { console.error(e); } }
-      svg.animate([{ filter: 'brightness(3) drop-shadow(0 0 30px #fff)' }, { filter: 'none' }], { duration: 700, easing: 'ease-out' });
+      svg.animate([{ filter: 'brightness(2.6) drop-shadow(0 0 30px #fff)' }, { filter: 'none' }], { duration: 800, easing: 'ease-out' });
+      ring.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 400, easing: 'cubic-bezier(.2,1.6,.4,1)' });
     }
     setTimeout(() => onDone?.({ skipped }), skipped ? 0 : 900);
   }
@@ -97,26 +130,50 @@ export function calibrateScreen(ctx, ui, { onDone, recalibrate = true } = {}) {
 
   function drawLive(f) {
     lg.clearRect(0, 0, 400, 460);
-    if (!f?.kp2d?.length) return;
-    const b = kpBounds(f);
-    if (b.n < 5) return;
+    const b = f?.kp2d?.length ? kpBounds(f) : null;
+    const haveKp = b && b.n >= 5;
+    if (!haveKp) {
+      if (silCanvas && (silCanvas.width || silCanvas.videoWidth)) {           // no keypoints: centre the mirror image
+        const cw = silCanvas.videoWidth || silCanvas.width, ch = silCanvas.videoHeight || silCanvas.height;
+        const s = Math.min(400 / cw, 440 / ch);
+        drawSil(silCanvas, 200 - (cw * s) / 2, 10, cw * s, ch * s);
+      }
+      return;
+    }
     // fit the player's keypoints to the silhouette: uniform scale by height, centred on the mean x
-    const asp = kpIsSelfie(f) ? 2.4 / 2.2 : ui.videoAspect || 16 / 9;
+    const selfie = kpIsSelfie(f);
+    const asp = selfie ? 2.4 / 2.2 : ui.videoAspect || 16 / 9;
     let mx = 0, n = 0;
-    for (const p of f.kp2d) if ((p.c ?? 1) >= 0.45) { mx += kpIsSelfie(f) ? p.x : 1 - p.x; n++; }
+    for (const p of f.kp2d) if ((p.c ?? 1) >= 0.45) { mx += selfie ? p.x : 1 - p.x; n++; }
     mx /= n || 1;
-    const bh = Math.max(0.05, b.maxY - b.minY);
-    const fullBody = !upperOnly();
-    const silH = (SIL_BOX.bottom - SIL_BOX.top) * (fullBody ? 0.9 : 0.55);
-    const s = silH / bh;
-    const map = (x, y) => [SIL_BOX.cx + (x - mx) * s * asp, SIL_BOX.top + 30 + (y - b.minY) * s];
-    drawSkeleton(lg, { source: 'synthetic' }, f.kp2d.map((p) => (kpIsSelfie(f) ? p : { x: 1 - p.x, y: p.y, c: p.c })), f.edges, map, { width: 4, glow: 16, color: '#ffffff', core: '#fff6c8' });
+    const minY = b.minY, bh = Math.max(0.05, b.maxY - b.minY);
+    // full body: eyes → ankles = 394 guide units. Seated / upper body (legs bent or out of frame): when the arms are
+    // spread, wrist-to-wrist = 308 units; otherwise assume the visible span is about eyes → knees
+    const bw = Math.max(0.02, (b.maxX - b.minX) * asp);
+    const s = !upperOnly() ? 394 / bh : bw > bh * 0.75 ? 308 / bw : 300 / bh;
+    const oy = 42;                                    // eye line of the guide's head
+    if (silCanvas && (silCanvas.width || silCanvas.videoWidth)) drawSil(silCanvas, SIL_BOX.cx - mx * s * asp, oy - minY * s, s * asp, s);
+    const map = (x, y) => [SIL_BOX.cx + (x - mx) * s * asp, oy + (y - minY) * s];
+    drawSkeleton(lg, { source: 'synthetic' }, f.kp2d.map((p) => (selfie ? p : { x: 1 - p.x, y: p.y, c: p.c })), f.edges, map,
+      silCanvas ? { width: 1.8, glow: 8, color: '#4ff3ff', core: '#ffffff', alpha: 0.7 } : { width: 2.4, glow: 12, color: '#bff9ff', core: '#ffffff', alpha: 0.85 });
+  }
+  function drawSil(c, x, y, w, hh) {
+    lg.save();
+    lg.globalAlpha = 0.85;
+    lg.globalCompositeOperation = 'lighter';
+    if (!silMirrored) { lg.translate(x + w, y); lg.scale(-1, 1); lg.drawImage(c, 0, 0, w, hh); } else lg.drawImage(c, x, y, w, hh);
+    lg.restore();
   }
 
   function drawMini(f, dist) {
     const W = mini.width, H = mini.height;
     mg.clearRect(0, 0, W, H);
     mg.fillStyle = 'rgba(12,8,32,.8)'; mg.fillRect(0, 0, W, H);
+    if (silCanvas && (silCanvas.width || silCanvas.videoWidth)) {
+      mg.save(); mg.globalAlpha = 0.7;
+      if (!silMirrored) { mg.translate(W, 0); mg.scale(-1, 1); }
+      mg.drawImage(silCanvas, 0, 0, W, H); mg.restore();
+    }
     mg.strokeStyle = 'rgba(160,140,255,.35)'; mg.lineWidth = 1; mg.setLineDash([4, 4]);
     mg.strokeRect(W * 0.28, H * 0.04, W * 0.44, H * 0.92); mg.setLineDash([]);
     if (!f) return;
@@ -136,11 +193,19 @@ export function calibrateScreen(ctx, ui, { onDone, recalibrate = true } = {}) {
     guide.innerHTML = `<i class="bl-guide-arrow a-${D.arrow}"></i><b>${D.title}</b><span>${D.sub}</span>`;
     guide.classList.add('is-on');
   }
+  let shownPct = -1;
+  function setProgress(p) {
+    clipRect.setAttribute('y', (460 - 460 * (0.03 + p * 0.97)).toFixed(1));
+    ringFill.setAttribute('stroke-dashoffset', (C * (1 - p)).toFixed(2));
+    const pc = Math.round(p * 100);
+    if (pc !== shownPct) { shownPct = pc; pctNum.textContent = pc; }
+  }
 
   return {
     node,
     get progress() { return progress; },
     finish,
+    setSilhouetteCanvas: setSil,
     update(dt) {
       t += dt;
       if (done) return;
@@ -158,12 +223,13 @@ export function calibrateScreen(ctx, ui, { onDone, recalibrate = true } = {}) {
       const score = Math.min(m.l, m.r) * m.upright;
       const matched = okFrame && score > 0.55;
       progress = matched ? Math.min(1, progress + dt / HOLD_S) : Math.max(0, progress - dt * 1.6);
-      clipRect.setAttribute('y', (460 - 460 * (0.04 + progress * 0.96)).toFixed(1));
+      setProgress(progress);
+      const bodyOk = okFrame && m.upright > 0.5;
       parts.armL.classList.toggle('is-ok', m.l > 0.55); parts.armR.classList.toggle('is-ok', m.r > 0.55);
-      parts.body.classList.toggle('is-ok', okFrame && m.upright > 0.5);
+      parts.body.classList.toggle('is-ok', bodyOk); parts.head.classList.toggle('is-ok', okFrame);
+      parts.legL.classList.toggle('is-ok', bodyOk && !upperOnly()); parts.legR.classList.toggle('is-ok', bodyOk && !upperOnly());
       node.classList.toggle('is-matching', matched);
-      pct.textContent = Math.round(progress * 100);
-      // the player's left arm is on screen-left in this mirror-style view
+      node.classList.toggle('is-found', !!f);
       checks.frame.classList.toggle('is-ok', okFrame && !dist);
       checks.armL.classList.toggle('is-ok', m.l > 0.55);
       checks.armR.classList.toggle('is-ok', m.r > 0.55);

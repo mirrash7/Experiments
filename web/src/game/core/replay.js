@@ -1,7 +1,11 @@
 // Highlight replay: records the last ~20 s of the hero's applied pose (hero-space humanoid pose, read straight from
-// the hero's pose proxies - no allocation), the spirits on the field and the judgements; picks the best combo window
-// and plays it back on the hero at 0.35x with the director's front cinematic camera, re-spawning the spirits on their
-// recorded paths and re-firing their outcomes. Everything is re-rendered from captured motion, not a video.
+// the hero's pose proxies - no allocation), the spirits on the field and the judgements, and plays a clip back on the
+// hero at 0.35x with the director's front cinematic camera, re-spawning the spirits on their recorded paths and
+// re-firing their outcomes. Everything is re-rendered from captured motion, not a video.
+//
+// Best moment of the WHOLE run: the recorder re-scores the ring about once a second and, whenever a window (that has
+// fully played out) beats the best so far, copies its frames into a saved clip (rolling best-window buffer). A pinned
+// clip (the boss kill) is always kept and wins at the results screen.
 import * as THREE from 'three';
 import { pathPos } from './spirits.js';
 
@@ -25,7 +29,88 @@ export class ReplayRecorder {
     this.data = new Float32Array(CAP * this.stride);
     this.clear();
   }
-  clear() { this.head = 0; this.count = 0; this.lastT = -1e9; this.notes.length = 0; }
+  clear() {
+    this.head = 0; this.count = 0; this.lastT = -1e9; this.notes.length = 0;
+    this.best = null; this.pinned = null; this._pinReq = null; this._scanT = 0;
+  }
+
+  /**
+   * Rolling best: call ~1/s with the score events. Scores windows that ended at least `settle` s ago; a better one is
+   * snapshotted into this.best.
+   */
+  scan(events, songT, { windowS = 2.6, settle = 1.0 } = {}) {
+    if (this._pinReq && songT >= this._pinReq.t1 + 0.1) {
+      const c = this.snapshot(this._pinReq.t0, this._pinReq.t1);
+      if (c) { c.pinned = true; c.label = this._pinReq.label; c.pts = Infinity; this.pinned = c; }
+      this._pinReq = null;
+    }
+    if (songT - this._scanT < 1) return;
+    this._scanT = songT;
+    const r = this.range;
+    if (!r || r.t1 - r.t0 < windowS + settle) return;
+    const lo = r.t0 + 0.3, hi = Math.min(r.t1, songT) - settle;
+    const w = this.bestWindow(events, lo, hi, windowS);
+    if (w && w.hits >= 2 && (!this.best || w.pts > this.best.pts)) {
+      const c = this.snapshot(w.t0, w.t1);
+      if (c) { Object.assign(c, { pts: w.pts, hits: w.hits, label: 'BEST MOMENT' }); this.best = c; }
+    }
+  }
+  /** Always keep [t - before, t + after] (e.g. the boss-kill blast); snapshotted once the frames exist. */
+  pin(t, { before = 1.6, after = 1.6, label = 'FINISHER' } = {}) { this._pinReq = { t0: t - before, t1: t + after, label }; }
+  /** Pin request still waiting for frames (the run ended early): snapshot what exists. */
+  flushPin() {
+    if (!this._pinReq) return;
+    const r = this.range;
+    if (r) { const c = this.snapshot(this._pinReq.t0, Math.min(this._pinReq.t1, r.t1)); if (c) { c.pinned = true; c.label = this._pinReq.label; this.pinned = c; } }
+    this._pinReq = null;
+  }
+
+  /** Best window in [lo, hi] by points of the judgements inside it (score.events: {t, kind, pts}). */
+  bestWindow(events, lo, hi, windowS) {
+    let best = null, bestPts = -1;
+    const evs = events.filter((e) => e.t >= lo && e.t <= hi + windowS);
+    for (const e of evs) {
+      const a = Math.max(lo, Math.min(e.t - windowS * 0.4, hi - windowS));
+      if (a + windowS > hi + 1e-6 || a < lo - 1e-6) continue;
+      let pts = 0, hits = 0;
+      for (const f of evs) if (f.t >= a && f.t <= a + windowS) { pts += f.pts + (f.kind === 'perfect' ? 50 : 0) + (f.kind !== 'miss' ? 40 : -150); if (f.kind !== 'miss') hits++; }
+      if (hits && pts > bestPts) { bestPts = pts; best = { t0: a, t1: a + windowS, pts, hits }; }
+    }
+    return best;
+  }
+
+  /** Copy frames [t0, t1] (+ the notes visible in it) out of the ring into a standalone clip. */
+  snapshot(t0, t1) {
+    if (!this.count || !this.data) return null;
+    const i0 = Math.max(0, this._find(t0)), i1 = this._find(t1);
+    if (i1 < 0 || i1 - i0 < 10) return null;
+    const n = i1 - i0 + 1, s = this.stride;
+    const clip = { times: new Float64Array(n), beats: new Float64Array(n), data: new Float32Array(n * s), count: n, stride: s, bones: this.bones };
+    const base = (this.head - this.count + CAP) % CAP;
+    for (let k = 0; k < n; k++) {
+      const i = (base + i0 + k) % CAP;
+      clip.times[k] = this.times[i]; clip.beats[k] = this.beats[i];
+      clip.data.set(this.data.subarray(i * s, i * s + s), k * s);
+    }
+    clip.t0 = clip.times[0]; clip.t1 = clip.times[n - 1];
+    const b0 = clip.beats[0], b1 = clip.beats[n - 1];
+    clip.notes = this.notes.filter((r) => r.spawnBeat <= b1 && Math.min(r.outBeat, r.beat + 3) >= b0 - 0.5).map((r) => ({ ...r, from: r.from.clone(), to: r.to.clone(), dir: r.dir.clone() }));
+    return clip;
+  }
+  /** The clip for the results screen: the pinned finisher, else the best window, else the ring's newest seconds. */
+  pick(events, windowS = 2.6) {
+    this.flushPin();
+    if (this.pinned) return this.pinned;
+    const r = this.range;
+    if (r) {
+      const w = this.bestWindow(events, r.t0 + 0.3, r.t1, windowS);
+      if (w && (!this.best || w.pts > this.best.pts)) { const c = this.snapshot(w.t0, w.t1); if (c) return Object.assign(c, { pts: w.pts, hits: w.hits, label: 'BEST MOMENT' }); }
+    }
+    if (this.best) return this.best;
+    if (!r || r.t1 - r.t0 < 1) return null;
+    const c = this.snapshot(Math.max(r.t0, r.t1 - windowS), r.t1);
+    return c ? Object.assign(c, { pts: 0, hits: 0, label: 'REPLAY' }) : null;
+  }
 
   /** Record the hero's current pose (call after the pose is applied, once per frame). */
   record(songT, beat) {
@@ -66,7 +151,7 @@ export class ReplayRecorder {
     return { t0: this.times[(this.head - this.count + CAP) % CAP], t1: this.times[(this.head - 1 + CAP) % CAP] };
   }
 
-  /** Best window (s) by points of the judgements inside it (score.events: {t, kind, pts}). */
+  /** Legacy: best window (s) inside the ring only. */
   pickBest(events, windowS = 5) {
     const r = this.range;
     if (!r || r.t1 - r.t0 < 1) return null;
@@ -95,25 +180,35 @@ export class ReplayRecorder {
   }
 }
 
+/** Index of the newest frame with time <= t in a clip (binary search), or -1. */
+function clipFind(c, t) {
+  if (!c.count || t < c.times[0]) return -1;
+  let lo = 0, hi = c.count - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (c.times[mid] <= t) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+
 export class ReplayPlayer {
   constructor({ rec, getVisuals, ui, audio }) {
     this.rec = rec; this.getVisuals = getVisuals; this.ui = ui; this.audio = audio;
     this.active = false; this.t = 0; this.speed = 0.35;
     this.pose = null; this._p = new THREE.Vector3(); this._qa = new THREE.Quaternion(); this._qb = new THREE.Quaternion();
-    this.views = new Map(); this.onEnd = null;
+    this.views = new Map(); this.onEnd = null; this.onProgress = null;
   }
   get progress() { return this.active ? (this.t - this.win.t0) / Math.max(1e-3, this.win.t1 - this.win.t0) : 0; }
+  /** Real-time length (s) of a clip at a speed. */
+  static duration(clip, speed = 0.35) { return clip ? (clip.t1 - clip.t0) / speed : 0; }
 
-  start(win, { speed = 0.35, onEnd = null } = {}) {
-    const rec = this.rec;
-    if (!win || !rec.count) return false;
+  /** Play a clip (from rec.pick / rec.snapshot). */
+  start(clip, { speed = 0.35, onEnd = null, onProgress = null } = {}) {
+    if (!clip || !clip.count) return false;
     this.stop();
-    this.win = win; this.t = win.t0; this.speed = speed; this.onEnd = onEnd; this.active = true;
+    this.win = clip; this.t = clip.t0; this.speed = speed; this.onEnd = onEnd; this.onProgress = onProgress; this.active = true;
     if (!this.pose) {
       this.pose = { hips: new THREE.Vector3(), rotations: {} };
-      for (const b of rec.bones) this.pose.rotations[b] = new THREE.Quaternion();
+      for (const b of clip.bones) this.pose.rotations[b] = new THREE.Quaternion();
     }
-    for (const n of rec.notes) { n._fired = false; n._pos ??= new THREE.Vector3(); }
+    for (const n of clip.notes) { n._fired = false; n._pos ??= new THREE.Vector3(); }
     return true;
   }
   stop() {
@@ -125,32 +220,31 @@ export class ReplayPlayer {
   /** Advance by real dt; applies the interpolated pose to the hero, flies the recorded spirits. Returns playback beat. */
   update(dt, hero) {
     if (!this.active) return 0;
-    const rec = this.rec, CAPn = CAP;
-    this.t += dt * this.speed;
-    if (this.t >= this.win.t1) { this.t = this.win.t1; }
-    const li = rec._find(this.t);
-    if (li < 0) return 0;
-    const base = (rec.head - rec.count + CAPn) % CAPn;
-    const ia = (base + li) % CAPn, ib = (base + Math.min(rec.count - 1, li + 1)) % CAPn;
-    const ta = rec.times[ia], tb = rec.times[ib];
+    const c = this.win;
+    this.t = Math.min(c.t1, this.t + dt * this.speed);
+    const ia = clipFind(c, this.t);
+    if (ia < 0) return 0;
+    const ib = Math.min(c.count - 1, ia + 1);
+    const ta = c.times[ia], tb = c.times[ib];
     const u = tb > ta ? Math.min(1, Math.max(0, (this.t - ta) / (tb - ta))) : 0;
-    const d = rec.data, s = rec.stride, oa = ia * s, ob = ib * s;
+    const d = c.data, s = c.stride, oa = ia * s, ob = ib * s;
     this.pose.hips.set(d[oa] + (d[ob] - d[oa]) * u, d[oa + 1] + (d[ob + 1] - d[oa + 1]) * u, d[oa + 2] + (d[ob + 2] - d[oa + 2]) * u);
-    for (let b = 0, k = 3; b < rec.bones.length; b++, k += 4) {
+    for (let b = 0, k = 3; b < c.bones.length; b++, k += 4) {
       this._qa.set(d[oa + k], d[oa + k + 1], d[oa + k + 2], d[oa + k + 3]);
       this._qb.set(d[ob + k], d[ob + k + 1], d[ob + k + 2], d[ob + k + 3]);
-      this.pose.rotations[rec.bones[b]].copy(this._qa).slerp(this._qb, u);
+      this.pose.rotations[c.bones[b]].copy(this._qa).slerp(this._qb, u);
     }
     hero?.applyHumanoidPose(this.pose);
-    const beat = rec.beats[ia] + (rec.beats[ib] - rec.beats[ia]) * u;
+    const beat = c.beats[ia] + (c.beats[ib] - c.beats[ia]) * u;
     this._spirits(beat);
-    if (this.t >= this.win.t1) { const cb = this.onEnd; this.stop(); cb?.(); }
+    try { this.onProgress?.(this.progress); } catch { /* */ }
+    if (this.t >= c.t1) { const cb = this.onEnd; this.stop(); cb?.(); }
     return beat;
   }
 
   _spirits(beat) {
     const V = this.getVisuals();
-    for (const n of this.rec.notes) {
+    for (const n of this.win.notes) {
       const visible = beat >= n.spawnBeat && !n._fired && beat <= n.outBeat + 0.01 && beat < n.beat + 3;
       let v = this.views.get(n);
       if (visible && !v && !n.weak) {

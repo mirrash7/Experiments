@@ -164,12 +164,13 @@ class SpiritView {
     const add = (geo, mat, parent = this.inner) => {
       const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; parent.add(m);
       if (mat.uniforms?.uDissolve && geo.attributes.aMat) {
-        this.ink ??= inkMaterial({ color: new THREE.Color(s.deep).multiplyScalar(0.25), width: type === 'brute' ? 0.035 : 0.022, time, wigSpeed: mat.uniforms.uWigSpeed.value });
+        this.ink ??= inkMaterial({ color: new THREE.Color(s.deep).multiplyScalar(0.25), width: type === 'brute' ? 0.04 : 0.03, time, wigSpeed: mat.uniforms.uWigSpeed.value });
         const h = new THREE.Mesh(hullGeometry(geo), this.ink); h.frustumCulled = false; parent.add(h); this.hulls.push(h);
       }
       return m;
     };
-    this.halo = halo({ color: s.glow, core: '#fff6e0', intensity: 1.2, coreSize: 0.2, time, rays: type === 'core' ? 1 : 0.4 });
+    // halo depth-pulled toward the camera so its white-hot core reads over the crystal body from any angle
+    this.halo = halo({ color: s.glow, core: '#fff6e0', intensity: 1.2, coreSize: 0.2, time, rays: type === 'core' ? 1 : 0.4, pull: type === 'brute' ? 0.6 : 0.35 });
     this.ring = new THREE.Mesh(unitQuad(), ringMaterial({ color: s.glow, bill: 1, time }));
     this.ring.frustumCulled = false; this.ring.renderOrder = 7;
     this.object.add(this.halo, this.ring);
@@ -245,8 +246,8 @@ class SpiritView {
     if (dir) imp.copy(dir).normalize();
     const big = this.type === 'brute' || this.type === 'core';
     sys.shards.fire(p, imp.multiplyScalar(big ? 0.6 : 0.9), s.deep, s.bright, {
-      scale: s.shardScale * (0.9 + k * 0.15), speed: (big ? 6.5 : 5.2) * k, grav: 7, life: 1.25, count: s.shards, hot: 1 });
-    const gp = sys.glow;
+      scale: s.shardScale * (0.9 + k * 0.15), speed: (big ? 6.5 : 5.2) * k, grav: 7, life: 1.25, count: s.shards, hot: 1, pull: 1.0 });
+    const gp = sys.burst;
     const col = kind === 'perfect' ? '#fff0c0' : s.spark;
     gp.spawn(G.star, p.x, p.y, p.z, 0, 0, 0, 0.2, 0.15, (big ? 1.5 : 0.85) * k, col, 2.6, 1.0, 0, 0, Math.random() * 3);
     gp.spawn(G.glow, p.x, p.y, p.z, 0, 0, 0, 0.28, 0.3, (big ? 1.6 : 0.8) * k, s.glow, 1.0, 0.4, 0, 0);
@@ -271,7 +272,7 @@ class SpiritView {
   strikeHero() {
     if (this.state !== 'active') return;
     this._syncHitPoint();
-    const p = this.hitPoint, gp = this.sys.glow, s = this.style;
+    const p = this.hitPoint, gp = this.sys.burst, s = this.style;
     gp.spawn(G.star, p.x, p.y, p.z, 0, 0, 0, 0.18, 0.2, 1.0, '#ff4040', 2.6, 1.0, 0, 0, Math.random());
     gp.spawn(G.glow, p.x, p.y, p.z, 0, 0, 0, 0.3, 0.5, 1.4, '#ff2030', 1.2, 0.3, 0, 0);
     for (let i = 0; i < 10; i++) {
@@ -291,16 +292,16 @@ class SpiritView {
   impact(kind = 'good', dir = null) {
     if (this.state !== 'active') return;
     this._syncHitPoint();
-    const p = this.hitPoint, gp = this.sys.glow, s = this.style;
+    const p = this.hitPoint, gp = this.sys.burst, s = this.style;
     this.flash = 0.8; this.knock = 1;
     gp.spawn(G.star, p.x, p.y, p.z - 0.4, 0, 0, 0, 0.16, 0.15, 0.9, s.spark, 2.4, 1, 0, 0, Math.random() * 3);
     for (let i = 0; i < 8; i++) { const th = Math.random() * Math.PI * 2, sp = 5 + Math.random() * 6; gp.spawn(G.streak, p.x, p.y, p.z - 0.4, Math.cos(th) * sp, Math.sin(th) * sp, -3, 0.25, 0.12, 0.06, s.spark, 2.2, 0.8, 4, 4, 0, 0, 3); }
-    this.sys.shards.fire(p, _imp.set(0, 0.5, dir ? Math.sign(dir.z || 1) : 1), s.deep, s.bright, { scale: 0.2, speed: 4, count: 8, life: 0.9 });
+    this.sys.shards.fire(p, _imp.set(0, 0.5, dir ? Math.sign(dir.z || 1) : 1), s.deep, s.bright, { scale: 0.2, speed: 4, count: 8, life: 0.9, pull: 1.0 });
   }
   block() {
     if (this.state !== 'active') return;
     this._syncHitPoint();
-    const p = this.hitPoint, gp = this.sys.glow;
+    const p = this.hitPoint, gp = this.sys.burst;
     gp.spawn(G.ring, p.x, p.y, p.z - 0.8, 0, 0, 0, 0.3, 0.2, 1.2, '#a0e8ff', 2.2, 0, 0, 0);
     gp.spawn(G.cross, p.x, p.y, p.z - 0.8, 0, 0, 0, 0.2, 0.2, 1.0, '#d0f4ff', 2.0, 0.8, 0, 0, 0.785);
     this.knock = 0.6;
@@ -312,6 +313,7 @@ class SpiritView {
     this.state = 'active'; this.t = 0; this.tele = 0; this.outro = 0; this.outroKind = ''; this.flash = 0; this.knock = 0; this.outroRelease = false;
     this.side = opts.side ?? 'center';
     this.target = opts.target ?? null;
+    this.react = !!opts.react; this.pop = this.react ? 0 : 1;
     this.inner.scale.setScalar(1); this.inner.rotation.set(0, 0, 0); this.inner.position.set(0, 0, 0);
     this.object.visible = true; this.inner.visible = true; this.halo.visible = this.type !== 'sweep';
     for (const h of this.hulls) h.visible = true;
@@ -328,6 +330,16 @@ class SpiritView {
     if (this.warn) { this.warn.material.uniforms.uT.value = 0; this.sys.fxGroup.add(this.warn); }
     const parent = opts.parent ?? this.sys.parent;
     if (parent && this.object.parent !== parent) parent.add(this.object);
+    if (this.react) this._popIn();
+  }
+  /** Reaction-test spirit: appears on the spot with a deliberate "reflex check" tell (white flash, rings, pop). */
+  _popIn() {
+    const p = this.hitPoint, gp = this.sys.burst;
+    this.flash = 1; this.inner.scale.setScalar(0.01);
+    gp.spawn(G.star, p.x, p.y, p.z, 0, 0, 0, 0.22, 0.2, 1.4, '#ffffff', 3.0, 1, 0, 0, 0.4);
+    gp.spawn(G.ring, p.x, p.y, p.z, 0, 0, 0, 0.3, 0.1, 1.1, '#ffffff', 2.4, 0, 0, 0);
+    gp.spawn(G.ring, p.x, p.y, p.z, 0, 0, 0, 0.45, 0.05, 0.75, this.style.glow, 2.0, 0, 0, 0);
+    for (let i = 0; i < 8; i++) { const th = (i / 8) * Math.PI * 2; gp.spawn(G.streak, p.x, p.y, p.z, Math.cos(th) * 6, Math.sin(th) * 6, 0, 0.18, 0.12, 0.05, '#ffffff', 2.4, 0.8, 6, 0, 0, 0, 3); }
   }
   _beginOutro(kind, dur) {
     this.state = 'outro'; this.outroKind = kind; this.outro = 0; this.outroDur = dur;
@@ -351,8 +363,13 @@ class SpiritView {
     if (dt > 0) { this.vel.subVectors(this.object.position, this.prev).divideScalar(dt); }
     this.prev.copy(this.object.position);
     this._syncHitPoint();
-    this.flash *= Math.exp(-dt * 10);
+    this.flash *= Math.exp(-dt * (this.pop < 1 ? 5 : 10));
     this.knock = (this.knock ?? 0) * Math.exp(-dt * 7);
+    if (this.pop < 1 && this.state === 'active') {     // elastic pop: 0 -> 1.3 -> 1 over 0.35 s
+      this.pop = Math.min(1, this.pop + dt / 0.35);
+      const x = this.pop, e = 1 + Math.sin(x * Math.PI * 1.5) * (1 - x) * 0.9;
+      this.popScale = Math.min(1, x * 3) * e;
+    } else this.popScale = 1;
     const glow = tele * tele;
     for (const m of this.mats) { m.uniforms.uGlow.value = glow + Math.sin(t * 9) * 0.08 + 0.15; m.uniforms.uFlash.value = this.flash; }
     this.halo.material.uniforms.uIntensity.value = (this.type === 'brute' ? 0.5 : 1.0) + glow * 1.4 + this.flash * 2;
@@ -407,6 +424,7 @@ class SpiritView {
         break;
       }
     }
+    if (this.react && this.state === 'active' && this.type !== 'core') this.inner.scale.setScalar(this.popScale);
     if (this.warn) {
       const tz = this.target ? this.target.z : 0;
       this.warn.position.set(this.object.position.x, 0.025, tz);
@@ -444,7 +462,7 @@ export function createSpirits(ctx, shared) {
   const pools = {}, active = new Set();
   const MAX_PER_TYPE = 12;
   const sys = {
-    time: shared.time, glow: shared.worldGlow, shards: shared.shards, fxGroup,
+    time: shared.time, glow: shared.worldGlow, burst: shared.burstGlow ?? shared.worldGlow, shards: shared.shards, fxGroup,
     parent: ctx.worldScene ?? null, frame: 0, camPos: new THREE.Vector3(),
     // frame id = the renderer's render counter (constant between two rendered frames), so CORE may call
     // view.update() and/or spirits.update() in any order without double-ticking

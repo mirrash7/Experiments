@@ -85,13 +85,31 @@ export function bootScreen(ctx, { onTracker, current = null, available = {}, sta
 }
 
 // ======================================================================================= title
-export function titleScreen(ctx, { onPlay, onTutorial, onSettings } = {}) {
+const MODES = [['showcase', 'SHOWCASE', 'No-fail · see it all'], ['challenge', 'CHALLENGE', 'Hearts can run out']];
+/** Showcase / Challenge segmented toggle. Writes settings.mode, emits 'settings:change', calls onMode(mode). */
+function modeToggle(ctx, { mode, onMode, idPrefix = 'mode' }) {
+  const settings = ctx.settings || {};
+  let cur = mode ?? settings.mode ?? 'showcase';
+  const btns = MODES.map(([id, label, sub]) => uiButton(label, () => {
+    cur = id; settings.mode = id;
+    btns.forEach((b) => b.classList.toggle('is-on', b.dataset.mode === id));
+    try { onMode?.(id); } catch (e) { console.error(e); }
+    ctx.bus?.emit?.('settings:change', { key: 'mode', value: id, settings });
+  }, { cls: 'bl-seg-btn bl-mode-btn' + (cur === id ? ' is-on' : ''), sub, id: `${idPrefix}-${id}` }));
+  btns.forEach((b, i) => { b.dataset.mode = MODES[i][0]; });
+  return h('div', { class: 'bl-mode' }, h('span', { class: 'bl-mode-lab' }, 'MODE'), h('div', { class: 'bl-seg' }, btns));
+}
+
+/** title({ onPlay, onTutorial, onSettings, mode?, onMode?(mode), best?, tutorialLabel? }) */
+export function titleScreen(ctx, { onPlay, onTutorial, onSettings, mode, onMode, best, tutorialLabel = 'TUTORIAL' } = {}) {
   const node = h('div', { class: 'bl-title' },
-    h('div', { class: 'bl-title-top' }, LOGO(), h('p', { class: 'bl-tagline' }, 'Strike to the beat · Shatter the glitch')),
+    h('div', { class: 'bl-title-top' }, LOGO(), h('p', { class: 'bl-tagline bl-title-tagline' }, 'Strike to the beat · Shatter the glitch')),
     h('nav', { class: 'bl-menu' },
       uiButton('PLAY', onPlay, { cls: 'is-primary', icon: ICON.play, id: 'play' }),
-      uiButton('TUTORIAL', onTutorial, { icon: ICON.learn, id: 'tutorial' }),
-      uiButton('SETTINGS', onSettings, { icon: ICON.gear, id: 'settings' })),
+      uiButton(tutorialLabel, onTutorial, { icon: ICON.learn, id: 'tutorial' }),
+      uiButton('SETTINGS', onSettings, { icon: ICON.gear, id: 'settings' }),
+      modeToggle(ctx, { mode, onMode }),
+      Number.isFinite(+best) && +best > 0 ? h('div', { class: 'bl-title-best' }, h('span', {}, 'BEST'), h('b', {}, Math.round(+best).toLocaleString('en-US'))) : null),
     h('div', { class: 'bl-hint-card' }, h('i', { html: ICON.hand }),
       h('div', {}, h('b', {}, 'Raise a hand to aim'), h('span', {}, 'Hold still 0.8 s or punch to select · mouse & keys work too'))));
   return { node };
@@ -99,51 +117,149 @@ export function titleScreen(ctx, { onPlay, onTutorial, onSettings } = {}) {
 
 // ======================================================================================= settings
 const SETTING_ROWS = [
+  { key: 'mode', label: 'Mode', sub: 'Showcase never ends the run', options: [['showcase', 'Showcase'], ['challenge', 'Challenge']] },
   { key: 'tracker', label: 'Tracker', options: [['hmr', 'InstantHMR'], ['mediapipe', 'MediaPipe'], ['demo', 'Demo']] },
+  { key: 'seated', label: 'Seated mode', sub: 'Play from a chair: no legs, no jumps', options: [[false, 'Off'], [true, 'On']] },
   { key: 'upperBodyOnly', label: 'Upper body only', sub: 'No kicks or jumps (small rooms)', options: [[false, 'Off'], [true, 'On']] },
   { key: 'difficulty', label: 'Difficulty', options: [['easy', 'Easy'], ['normal', 'Normal'], ['hard', 'Hard']] },
   { key: 'volume', label: 'Volume', step: 0.1, min: 0, max: 1, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: 'judgeOffsetMs', label: 'Judge offset', sub: 'Shift timing if hits feel late / early', step: 10, min: -150, max: 150, fmt: (v) => `${v > 0 ? '+' : ''}${v} ms` },
   { key: 'quality', label: 'Graphics', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] },
 ];
+const VOLUME_PARTS = [['master', 'Master volume'], ['music', 'Music'], ['sfx', 'Effects']];
 
+/**
+ * settings({ settings, onClose, onChange(key, value, settings) }). settings.volume may be a number (legacy) or
+ * CORE's { master, music, sfx } object: the object gets one stepper per channel and audio.setVolume({ ...volume }).
+ */
 export function settingsScreen(ctx, { settings = {}, onClose, onChange } = {}) {
-  const defaults = { tracker: 'hmr', upperBodyOnly: false, difficulty: 'normal', volume: 0.8, judgeOffsetMs: 0, quality: 'high' };
-  for (const [k, v] of Object.entries(defaults)) if (settings[k] === undefined) settings[k] = v;
-  const change = (key, value) => {
-    settings[key] = value;
+  const defaults = { mode: 'showcase', tracker: 'hmr', seated: false, upperBodyOnly: false, difficulty: 'normal', volume: { master: 0.9, music: 0.8, sfx: 0.9 }, judgeOffsetMs: 0, quality: 'high' };
+  for (const [k, v] of Object.entries(defaults)) if (settings[k] === undefined) settings[k] = typeof v === 'object' ? { ...v } : v;
+  const emit = (key, value) => {
     try { onChange?.(key, value, settings); } catch (e) { console.error(e); }
     ctx.bus?.emit?.('settings:change', { key, value, settings });
-    if (key === 'volume') { try { ctx.audio?.setVolume?.({ master: value }); } catch { /* optional */ } }
   };
-  const rows = SETTING_ROWS.map((R) => {
-    const ctl = h('div', { class: 'bl-set-ctl' });
+  const applyVolume = () => {
+    const v = settings.volume;
+    try { ctx.audio?.setVolume?.(typeof v === 'object' ? { ...v } : { master: v }); } catch { /* optional */ }
+  };
+  const change = (key, value) => { settings[key] = value; emit(key, value); if (key === 'volume') applyVolume(); };
+  const stepper = (id, get, set, R) => {
+    const val = h('output', { class: 'bl-step-val' }, R.fmt(get()));
+    const bar = h('i', { class: 'bl-step-bar' });
+    const upd = () => { val.textContent = R.fmt(get()); bar.style.transform = `scaleX(${(get() - R.min) / (R.max - R.min)})`; };
+    const step = (d) => { const v = Math.round((get() + d * R.step) / R.step) * R.step; set(+Math.max(R.min, Math.min(R.max, v)).toFixed(3)); upd(); };
+    const minus = uiButton('−', () => step(-1), { cls: 'bl-step-btn', id: `set-${id}-minus` });
+    const plus = uiButton('+', () => step(1), { cls: 'bl-step-btn', id: `set-${id}-plus` });
+    minus.setAttribute('data-ui-repeat', ''); plus.setAttribute('data-ui-repeat', '');
+    upd();
+    return h('div', { class: 'bl-stepper' }, minus, h('div', { class: 'bl-step-mid' }, val, h('span', { class: 'bl-step-track' }, bar)), plus);
+  };
+  const row = (label, sub, ctl, cls = '') => h('div', { class: 'bl-set-row ' + cls }, h('div', { class: 'bl-set-label' }, label, sub ? h('small', {}, sub) : null), h('div', { class: 'bl-set-ctl' }, ctl));
+  const rows = [];
+  for (const R of SETTING_ROWS) {
     if (R.options) {
       const seg = h('div', { class: 'bl-seg' });
-      const btns = R.options.map(([val, lab]) => {
-        const b = uiButton(lab, () => { change(R.key, val); btns.forEach((x) => x.classList.toggle('is-on', x === b)); }, { cls: 'bl-seg-btn' + (settings[R.key] === val ? ' is-on' : ''), id: `set-${R.key}-${val}` });
-        return b;
-      });
-      seg.append(...btns); ctl.append(seg);
+      const btns = R.options.map(([val, lab]) => uiButton(lab, () => { change(R.key, val); btns.forEach((x, i) => x.classList.toggle('is-on', R.options[i][0] === val)); }, { cls: 'bl-seg-btn' + (settings[R.key] === val ? ' is-on' : ''), id: `set-${R.key}-${val}` }));
+      seg.append(...btns);
+      rows.push(row(R.label, R.sub, seg));
+    } else if (R.key === 'volume' && settings.volume && typeof settings.volume === 'object') {
+      for (const [ch, lab] of VOLUME_PARTS) {
+        const get = () => +(settings.volume[ch] ?? 1);
+        const set = (v) => { settings.volume = { ...settings.volume, [ch]: v }; emit('volume', settings.volume); applyVolume(); };
+        rows.push(row(lab, null, stepper(`volume-${ch}`, get, set, R), 'is-sub'));
+      }
     } else {
-      const val = h('output', { class: 'bl-step-val' }, R.fmt(settings[R.key]));
-      const bar = h('i', { class: 'bl-step-bar' });
-      const upd = () => { val.textContent = R.fmt(settings[R.key]); bar.style.transform = `scaleX(${(settings[R.key] - R.min) / (R.max - R.min)})`; };
-      const step = (d) => { const v = Math.round((settings[R.key] + d * R.step) / R.step) * R.step; change(R.key, +Math.max(R.min, Math.min(R.max, v)).toFixed(3)); upd(); };
-      const minus = uiButton('−', () => step(-1), { cls: 'bl-step-btn', id: `set-${R.key}-minus` });
-      const plus = uiButton('+', () => step(1), { cls: 'bl-step-btn', id: `set-${R.key}-plus` });
-      minus.setAttribute('data-ui-repeat', ''); plus.setAttribute('data-ui-repeat', '');
-      ctl.append(h('div', { class: 'bl-stepper' }, minus, h('div', { class: 'bl-step-mid' }, val, h('span', { class: 'bl-step-track' }, bar)), plus));
-      upd();
+      rows.push(row(R.label, R.sub, stepper(R.key, () => +settings[R.key] || 0, (v) => change(R.key, v), R)));
     }
-    return h('div', { class: 'bl-set-row' }, h('div', { class: 'bl-set-label' }, R.label, R.sub ? h('small', {}, R.sub) : null), ctl);
-  });
+  }
   const node = h('div', { class: 'bl-settings' },
     h('div', { class: 'bl-panel bl-settings-panel' },
       h('h2', { class: 'bl-h2' }, 'Settings'),
       h('div', { class: 'bl-set-rows' }, rows),
       h('div', { class: 'bl-panel-foot' }, uiButton('DONE', () => onClose?.(settings), { cls: 'is-primary', id: 'settings-done' }))));
   return { node, settings };
+}
+
+// ======================================================================================= clear-space check
+/**
+ * clearSpace({ onDone({ skipped, auto, seated }), seated?, autoContinue = true, holdS = 2.5 }): a safety check before
+ * the T-pose / first run. Shows a top-down 2 m x 2 m play-area diagram (or the seated "arm's reach" variant), a short
+ * checklist and a live framing check; continues on "I'M CLEAR" (hand dwell / click) or automatically after the body
+ * has been framed well for holdS seconds. "PLAY SEATED" / "PLAY STANDING" switches the variant; onDone reports it.
+ */
+const CS_DIAGRAM = {
+  seated: `<svg viewBox="0 0 240 260" class="bl-cs-svg"><rect x="70" y="14" width="100" height="12" rx="3" class="cs-screen"/><circle cx="120" cy="20" r="3" class="cs-cam"/>
+      <path d="M120 34v58" class="cs-dim"/><text x="128" y="68" class="cs-txt">~1.5 m</text>
+      <circle cx="120" cy="160" r="62" class="cs-zone"/><text x="120" y="244" class="cs-txt cs-mid">ARM'S REACH CLEAR (~1 m)</text>
+      <rect x="100" y="150" width="40" height="34" rx="6" class="cs-chair"/><circle cx="120" cy="140" r="12" class="cs-player"/><path d="M84 140h72" class="cs-player-arms"/></svg>`,
+  standing: `<svg viewBox="0 0 240 260" class="bl-cs-svg"><rect x="70" y="10" width="100" height="12" rx="3" class="cs-screen"/><circle cx="120" cy="16" r="3" class="cs-cam"/>
+      <path d="M120 28v34" class="cs-dim"/><text x="128" y="50" class="cs-txt">2–2.5 m</text>
+      <rect x="40" y="66" width="160" height="160" rx="6" class="cs-zone"/>
+      <path d="M40 238h160M40 233v10M200 233v10" class="cs-dim"/><text x="120" y="254" class="cs-txt cs-mid">2 m</text>
+      <path d="M212 66v160M207 66h10M207 226h10" class="cs-dim"/><text x="222" y="146" class="cs-txt cs-mid" transform="rotate(90 222 146)">2 m</text>
+      <circle cx="120" cy="146" r="14" class="cs-player"/><path d="M78 146h84" class="cs-player-arms"/><path d="M120 120v-14M114 112l6-8 6 8" class="cs-facing"/></svg>`,
+};
+const CS_ITEMS = {
+  seated: ['Sit on a stable chair without wheels or armrests', 'Nothing within arm\'s reach: desk, screen, lamps', 'Sit about 1.5 m from the camera'],
+  standing: ['No furniture, pets or people inside the square', 'Stand well back from the screen: punches and kicks aim at it', 'Non-slip floor: shoes or bare feet, no socks'],
+};
+export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, holdS = 2.5 } = {}) {
+  let isSeated = !!(seated ?? ctx.settings?.seated);
+  const live = h('div', { class: 'bl-cs-live' }, h('i'), h('b', {}, 'LOOKING FOR YOU…'), h('span', {}, ''));
+  const auto = h('div', { class: 'bl-cs-auto' });
+  const btn = uiButton("I'M CLEAR", () => finish(false, false), { cls: 'is-primary', icon: ICON.play, id: 'clear-ok' });
+  btn.setAttribute('data-ui-dwell', '1.2'); btn.setAttribute('data-ui-nopunch', '');
+  const swap = uiButton('', () => { isSeated = !isSeated; build(); good = 0; }, { cls: 'is-small', id: 'clear-seated' });
+  swap.setAttribute('data-ui-dwell', '1.2'); swap.setAttribute('data-ui-nopunch', '');
+  const skip = uiButton('SKIP', () => finish(true, false), { cls: 'is-small', id: 'clear-skip' });
+  skip.setAttribute('data-ui-mouseonly', '');
+  const kicker = h('div', { class: 'bl-kicker' }, 'SAFETY CHECK');
+  const title = h('h1', { class: 'bl-h1' });
+  const text = h('p', { class: 'bl-calib-text' });
+  const list = h('ul', { class: 'bl-cs-list' });
+  const diagram = h('div', { class: 'bl-cs-diagram' });
+  const node = h('div', { class: 'bl-cs' },
+    h('div', { class: 'bl-panel bl-cs-panel' },
+      h('div', { class: 'bl-cs-copy' }, kicker, title, text, list, live, h('div', { class: 'bl-cs-actions' }, btn, swap, auto)),
+      diagram),
+    h('div', { class: 'bl-calib-skip' }, skip));
+  function build() {
+    node.classList.toggle('is-seated', isSeated);
+    title.replaceChildren(isSeated ? 'CLEAR YOUR' : 'CLEAR', h('br'), isSeated ? 'REACH' : 'YOUR SPACE');
+    text.textContent = isSeated ? 'Seated mode: you will punch, guard, lean to dodge and charge the blast from your chair.' : 'You will punch, kick, jump and duck. Make sure you have about 2 m × 2 m of clear floor.';
+    list.replaceChildren(...CS_ITEMS[isSeated ? 'seated' : 'standing'].map((t) => h('li', {}, t)));
+    diagram.innerHTML = CS_DIAGRAM[isSeated ? 'seated' : 'standing'];
+    swap.querySelector('.bl-btn-label').firstChild.textContent = isSeated ? 'PLAY STANDING' : 'PLAY SEATED';
+  }
+  build();
+  let done = false, good = 0;
+  function finish(skipped, wasAuto) {
+    if (done) return;
+    done = true;
+    try { ctx.audio?.sfx?.('uiSelect'); } catch { /* */ }
+    onDone?.({ skipped, auto: wasAuto, seated: isSeated });
+  }
+  return {
+    node,
+    get seated() { return isSeated; },
+    finish: () => finish(false, false),
+    update(dt) {
+      if (done) return;
+      const f = freshFrame(ctx.motion, 700);
+      const d = f ? measureDistance(f, { upperBodyOnly: isSeated || !!ctx.settings?.upperBodyOnly }) : null;
+      const ok = !!f && !d;
+      good = ok ? good + dt : 0;
+      const [ttl, sub, kind] = !f ? ['LOOKING FOR YOU…', 'Step in front of the camera', 'wait'] : d ? [DISTANCE_TEXT[d].title, DISTANCE_TEXT[d].sub, 'warn'] : [isSeated ? 'FRAMED WELL' : 'WHOLE BODY IN VIEW', 'Distance looks right', 'ok'];
+      if (live.dataset.kind !== kind || live.children[1].textContent !== ttl) { live.dataset.kind = kind; live.children[1].textContent = ttl; live.children[2].textContent = sub; }
+      if (autoContinue && ok) {
+        const left = Math.max(0, holdS - good);
+        auto.textContent = `continuing in ${Math.ceil(left)}…`;
+        auto.style.setProperty('--k', (good / holdS).toFixed(3));
+        if (good >= holdS) finish(false, true);
+      } else if (auto.textContent) { auto.textContent = ''; auto.style.setProperty('--k', 0); }
+    },
+  };
 }
 
 // ======================================================================================= pause
@@ -224,20 +340,36 @@ const BODY = [
   { key: 'punchSpeed', alias: ['fastestPunch', 'punchSpeedMs'], label: 'Fastest punch', unit: 'm/s', dec: 1, ref: 10,
     icon: '<svg viewBox="0 0 24 24"><path d="M4 9h3l2-3h6a3 3 0 0 1 3 3v1h1a2 2 0 0 1 0 4h-1v1a4 4 0 0 1-4 4H9a5 5 0 0 1-5-5z"/><path d="M1 8h2M1 12h2M1 16h2" class="i-acc"/></svg>',
     tier: (v) => (v >= 8 ? 'Pro boxer speed' : v >= 6 ? 'Fighter class' : v >= 4 ? 'Sharp' : 'Warming up') },
-  { key: 'jumpHeight', alias: ['highestJump', 'jumpCm'], label: 'Highest jump', unit: 'cm', dec: 0, ref: 60,
+  { key: 'jumpHeight', alias: ['highestJump', 'jumpCm', 'maxJumpCm'], label: 'Highest jump', unit: 'cm', dec: 0, ref: 60,
     icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2.2"/><path d="M12 7v7M12 9l-5-3M12 9l5-3M12 14l-4 4M12 14l4 4"/><path d="M4 22h16" class="i-acc"/></svg>',
     tier: (v) => (v >= 45 ? 'Sky walker' : v >= 30 ? 'Spring-loaded' : v >= 15 ? 'Light feet' : 'Grounded') },
-  { key: 'reactionMs', alias: ['bestReaction', 'reaction'], label: 'Best reaction', unit: 'ms', dec: 0, ref: 600, invert: true,
+  { key: 'reactionMs', alias: ['bestReaction', 'reaction', 'bestReactionMs'], label: 'Best reaction', unit: 'ms', dec: 0, ref: 700, invert: true,
     icon: '<svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>',
-    tier: (v) => (v <= 180 ? 'Lightning reflexes' : v <= 250 ? 'Quick draw' : v <= 350 ? 'Alert' : 'Steady') },
+    // CORE's tier (core/score.js reactionTier: <= 330 / 400 / 480 ms) wins; the local mirror only covers stand-in stats
+    tier: (v, b) => (typeof b?.reactionTier === 'string' && b.reactionTier ? b.reactionTier : v <= 330 ? 'Lightning reflexes' : v <= 400 ? 'Quick draw' : v <= 480 ? 'Alert' : 'Steady') },
+  { key: 'timingSdMs', alias: ['timingConsistencyMs', 'timingSd'], label: 'Timing consistency', unit: 'ms', dec: 0, ref: 120, invert: true, prefix: '±',
+    icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6" class="i-acc"/></svg>',
+    tier: (v) => (v <= 25 ? 'Metronome' : v <= 45 ? 'On the beat' : v <= 70 ? 'Grooving' : 'Finding the beat') },
   { key: 'moves', alias: ['movesCount', 'moveCount'], label: 'Moves performed', unit: '', dec: 0, ref: 300,
     icon: '<svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>', tier: (v) => (v >= 200 ? 'Relentless' : v >= 100 ? 'Busy body' : 'Getting going') },
   { key: 'kcal', alias: ['calories'], label: 'Energy burned', unit: 'kcal', dec: 0, ref: 80, approx: true,
-    icon: '<svg viewBox="0 0 24 24"><path d="M12 2s6 6 6 12a6 6 0 0 1-12 0c0-3 2-5 2-5s0 3 2 4c0-5 2-11 2-11z"/></svg>', tier: () => 'approx.' },
+    icon: '<svg viewBox="0 0 24 24"><path d="M12 2s6 6 6 12a6 6 0 0 1-12 0c0-3 2-5 2-5s0 3 2 4c0-5 2-11 2-11z"/></svg>', tier: () => 'estimate' },
 ];
-const pick = (o, k, aliases) => { if (!o) return undefined; if (o[k] !== undefined) return o[k]; for (const a of aliases) if (o[a] !== undefined) return o[a]; return undefined; };
+const MIX = [['punch', 'PUNCH', '#ff8a3d'], ['kick', 'KICK', '#4ff3ff'], ['jump', 'JUMP', '#ff3b5c'], ['squat', 'DUCK', '#b06bff'], ['dodge', 'DODGE', '#ffd34f'], ['guard', 'GUARD', '#7fb8ff'], ['blast', 'BLAST', '#fff2a8']];
+const pick = (o, k, aliases) => { if (!o) return undefined; if (o[k] !== undefined && o[k] !== null) return o[k]; for (const a of aliases) if (o[a] !== undefined && o[a] !== null) return o[a]; return undefined; };
+const fmtInt = (v) => Math.round(+v || 0).toLocaleString('en-US');
 
-export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle } = {}) {
+/**
+ * results({ stats, onReplay, onAgain, onTitle, onSkipReplay?, photoCard? })
+ * Phase 1 "replay": full-screen letterboxed replay (cinematic bars, "REPLAY · BEST MOMENT" label, progress bar) driven by
+ *   bus 'replay' events ({ on:true|false } or { type|phase: 'start'|'progress'|'end', progress, label, speed }) and/or
+ *   ctx.game.replay.{active, progress}. Skipped when no replay starts within a short wait.
+ * Phase 2 "stats": the panels slide in, counters run, rank stamp, NEW BEST. Pressing REPLAY returns to phase 1.
+ * stats extras (all optional): newBest, best / prevBest, mode ('showcase'|'challenge'), replay { label, speed, hits },
+ *   body.timingSdMs, body.moveCounts { punch, kick, jump, squat, dodge, guard, blast }.
+ * photoCard (CV team): HTMLElement | canvas | { node|canvas|src, caption?, pending?: true } ; also handle.setPhotoCard().
+ */
+export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onSkipReplay, photoCard = null } = {}) {
   const rank = computeRank(stats);
   const j = stats.judgements || {};
   const total = Math.max(1, (j.perfect || 0) + (j.great || 0) + (j.good || 0) + (j.miss || 0));
@@ -250,44 +382,166 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle } = 
   const judgeRows = [['perfect', 'PERFECT'], ['great', 'GREAT'], ['good', 'GOOD'], ['miss', 'MISS']].map(([k, lab], i) =>
     h('div', { class: 'bl-res-jrow j-' + k },
       h('span', { class: 'bl-res-jlab' }, lab),
-      h('span', { class: 'bl-res-jbar' }, h('i', { style: { '--w': ((j[k] || 0) / total).toFixed(3), '--d': `${0.9 + i * 0.12}s` } })),
-      counter(j[k] || 0, 0, 0.9 + i * 0.12)));
+      h('span', { class: 'bl-res-jbar' }, h('i', { style: { '--w': ((j[k] || 0) / total).toFixed(3), '--d': `${0.5 + i * 0.12}s` } })),
+      counter(j[k] || 0, 0, 0.5 + i * 0.12)));
   const body = stats.body || stats;
-  const cards = BODY.map((B, i) => {
+  let ci = 0;
+  const cards = BODY.map((B) => {
     const v = pick(body, B.key, B.alias);
-    const has = Number.isFinite(+v) && v !== null;
-    const frac = has ? Math.max(0.04, Math.min(1, B.invert ? 1 - (+v - 120) / (B.ref - 120) : +v / B.ref)) : 0;
-    return h('div', { class: 'bl-bodycard' + (has ? '' : ' is-na'), style: { '--d': `${1.6 + i * 0.16}s`, '--f': frac.toFixed(3) } },
+    if (!(Number.isFinite(+v) && v !== null && v !== '' && +v > 0)) return null;     // hide unmeasured stats (no dead rows)
+    const i = ci++;
+    const frac = Math.max(0.04, Math.min(1, B.invert ? 1 - (+v - 0) / B.ref : +v / B.ref));
+    return h('div', { class: 'bl-bodycard', style: { '--d': `${0.9 + i * 0.14}s`, '--f': frac.toFixed(3) } },
       h('i', { class: 'bl-bodycard-icon', html: B.icon }),
       h('div', { class: 'bl-bodycard-main' },
         h('span', { class: 'bl-bodycard-label' }, B.label),
-        h('span', { class: 'bl-bodycard-val' }, B.approx && has ? '≈' : '', has ? counter(+v, B.dec, 1.6 + i * 0.16) : '—', h('small', {}, B.unit)),
+        h('span', { class: 'bl-bodycard-val' }, B.approx ? '≈' : '', B.prefix || '', counter(+v, B.dec, 0.9 + i * 0.14), h('small', {}, B.unit)),
         h('span', { class: 'bl-bodycard-meter' }, h('i')),
-        h('span', { class: 'bl-bodycard-tier' }, has ? B.tier(+v) : 'not measured')));
-  });
+        h('span', { class: 'bl-bodycard-tier' }, B.tier(+v, body))));
+  }).filter(Boolean);
+  // move mix: share of each move type (real counts from the detector)
+  const mc = body.moveCounts || stats.moveCounts || null;
+  let mix = null;
+  if (mc) {
+    const parts = MIX.map(([k, lab, col]) => [k, lab, col, +mc[k] || 0]).filter((p) => p[3] > 0);
+    const sum = parts.reduce((s, p) => s + p[3], 0);
+    if (sum > 0) {
+      mix = h('div', { class: 'bl-res-mix', style: { '--d': `${0.9 + ci * 0.14}s` } },
+        h('div', { class: 'bl-res-mix-head' }, h('span', {}, 'MOVE MIX'), h('b', {}, `${sum} moves`)),
+        h('div', { class: 'bl-res-mix-bar' }, parts.map(([, , col, n]) => h('i', { style: { flexGrow: n, background: col } }))),
+        h('div', { class: 'bl-res-mix-legend' }, parts.map(([, lab, col, n]) => h('span', {}, h('i', { style: { background: col } }), lab, h('b', {}, n)))));
+    }
+  }
+  const newBest = !!stats.newBest;
+  const prevBestV = stats.prevBest ?? stats.previousBest;
+  const prevBest = newBest ? prevBestV : (stats.best ?? prevBestV);
   const stamp = h('div', { class: 'bl-stamp r-' + rank }, h('span', {}, rank), h('i', { class: 'bl-stamp-ring' }));
-  const node = h('div', { class: 'bl-results' },
-    h('section', { class: 'bl-panel bl-res-left' },
-      h('div', { class: 'bl-res-kicker' }, stats.cleared === false ? 'DEFEATED' : 'STAGE CLEAR'),
+  const bestEl = newBest
+    ? h('div', { class: 'bl-res-newbest' }, h('b', { 'data-text': 'NEW BEST!' }, 'NEW BEST!'), Number.isFinite(+prevBestV) && +prevBestV > 0 ? h('span', {}, `previous ${fmtInt(prevBestV)}`) : null)
+    : Number.isFinite(+prevBest) && +prevBest > 0 ? h('div', { class: 'bl-res-bestline' }, 'BEST ', h('b', {}, fmtInt(prevBest))) : null;
+  const modeLab = stats.mode === 'showcase' ? 'SHOWCASE · ' : stats.mode === 'challenge' ? 'CHALLENGE · ' : '';
+  const photoSlot = h('section', { class: 'bl-res-photo bl-hidden' });
+  const left = h('div', { class: 'bl-res-col bl-res-colL' },
+    h('section', { class: 'bl-panel bl-res-left' + (newBest ? ' is-newbest' : '') },
+      h('div', { class: 'bl-res-kicker' }, modeLab + (stats.cleared === false ? 'DEFEATED' : 'STAGE CLEAR')),
       h('div', { class: 'bl-res-scorebox' },
-        h('div', {}, h('span', { class: 'bl-res-label' }, 'SCORE'), h('div', { class: 'bl-res-score' }, counter(stats.score || 0, 0, 0.2)),
-          stats.newBest ? h('span', { class: 'bl-res-best' }, 'NEW BEST!') : null),
+        h('div', {}, h('span', { class: 'bl-res-label' }, 'SCORE'), h('div', { class: 'bl-res-score' }, counter(stats.score || 0, 0, 0.15)), bestEl),
         stamp),
       h('div', { class: 'bl-res-mini' },
-        h('div', {}, h('span', {}, 'MAX COMBO'), h('b', {}, counter(stats.maxCombo || 0, 0, 0.6))),
-        h('div', {}, h('span', {}, 'ACCURACY'), h('b', {}, counter(((stats.accuracy ?? (((j.perfect || 0) * 3 + (j.great || 0) * 2 + (j.good || 0)) / (total * 3))) * 100), 1, 0.6), '%'))),
+        h('div', {}, h('span', {}, 'MAX COMBO'), h('b', {}, counter(stats.maxCombo || 0, 0, 0.4))),
+        h('div', {}, h('span', {}, 'ACCURACY'), h('b', {}, counter(((stats.accuracy ?? (((j.perfect || 0) * 3 + (j.great || 0) * 2 + (j.good || 0)) / (total * 3))) * 100), 1, 0.4), '%'))),
       h('div', { class: 'bl-res-judges' }, judgeRows)),
+    photoSlot);
+  const right = h('div', { class: 'bl-res-col bl-res-colR' },
     h('section', { class: 'bl-panel bl-res-right' },
       h('div', { class: 'bl-res-ai' }, h('i', { class: 'bl-res-ai-dot' }), 'YOUR BODY, MEASURED BY AI'),
-      h('p', { class: 'bl-res-ai-sub' }, 'Computed live from your tracked skeleton: wrist speed, hip rise and the gap between each cue and your first movement.'),
-      h('div', { class: 'bl-bodycards' }, cards)),
-    h('nav', { class: 'bl-res-nav' },
-      onReplay ? uiButton('REPLAY', onReplay, { icon: ICON.replay, id: 'res-replay' }) : null,
-      uiButton('PLAY AGAIN', onAgain, { cls: 'is-primary', icon: ICON.again, id: 'res-again' }),
-      uiButton('TITLE', onTitle, { icon: ICON.home, id: 'res-title' })));
-  // rank stamp: slams in after the score has counted up
-  setTimeout(() => {
-    if (!node.isConnected) return;
+      h('p', { class: 'bl-res-ai-sub' }, 'Computed live from your tracked skeleton: wrist speed, hip rise, timing spread and the gap between each cue and your first movement.'),
+      h('div', { class: 'bl-bodycards' }, cards.length ? cards : h('div', { class: 'bl-bodycard-empty' }, 'Play a full run to get your body stats.')),
+      mix));
+  const nopunch = (b, dwell) => { b.setAttribute('data-ui-nopunch', ''); if (dwell) b.setAttribute('data-ui-dwell', String(dwell)); return b; };
+  const nav = h('nav', { class: 'bl-res-nav' },
+    onReplay ? nopunch(uiButton('REPLAY', () => { wantReplay = performance.now(); onReplay(); }, { icon: ICON.replay, id: 'res-replay' }), 1.0) : null,
+    nopunch(uiButton('PLAY AGAIN', onAgain, { cls: 'is-primary', icon: ICON.again, id: 'res-again' }), 1.2),
+    nopunch(uiButton('TITLE', onTitle, { icon: ICON.home, id: 'res-title' }), 1.0));
+
+  // ---- cinematic replay layer
+  const R0 = stats.replay || {};
+  const cineLabel = h('b', {}, 'BEST MOMENT');
+  const cineMeta = h('span', { class: 'bl-cine-meta' });
+  const cineFill = h('i', { class: 'bl-cine-fill' });
+  const cineSkip = nopunch(uiButton('SKIP', () => { showStats('skip'); try { onSkipReplay?.(); } catch (e) { console.error(e); } }, { cls: 'is-small bl-cine-skip', id: 'res-skip-replay' }), 0.8);
+  // picture-in-picture: the CV mirror's recorded neon silhouette ("YOU · 0.35×") framed inside the letterbox, beside the
+  // 3D replay. The UI sets ui.replayOverlay = true, so CORE's fallback inset (core/space.js mirrorInset) stands down;
+  // if CORE still mounted its inset this round, the canvas is borrowed from it and its empty box is hidden.
+  const pipMedia = h('div', { class: 'bl-cine-pip-media' });
+  const pipTag = h('span', { class: 'bl-cine-pip-tag' }, h('i'), 'YOU');
+  const pip = h('figure', { class: 'bl-cine-pip' }, pipMedia, pipTag, h('figcaption', {}, 'your silhouette, same moment'));
+  const cine = h('div', { class: 'bl-cine' },
+    h('div', { class: 'bl-cine-bar bl-cine-top' }, h('div', { class: 'bl-cine-label' }, h('i', { class: 'bl-cine-rec' }), h('span', {}, 'REPLAY'), h('em', {}, '·'), cineLabel), cineMeta),
+    pip,
+    h('div', { class: 'bl-cine-bar bl-cine-bot' }, h('div', { class: 'bl-cine-prog' }, cineFill), h('span', { class: 'bl-cine-hint' }, 'Rebuilt from your tracked poses, not a video'), cineSkip));
+  let adopted = null;
+  function adoptMirror(d = {}) {
+    const m = ctx.mirror, c = m?.canvas;
+    if (!c || adopted) return;
+    const coreBox = c.closest?.('.bl-mirror-inset') || null;
+    if (!coreBox && m.mode !== 'replay') return;              // no recorded silhouette to show
+    adopted = { c, parent: c.parentNode, next: c.nextSibling, style: c.getAttribute('style'), coreBox };
+    if (coreBox) coreBox.style.visibility = 'hidden';
+    c.setAttribute('style', 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block');
+    pipMedia.append(c);
+    const sp = d.speed ?? R0.speed ?? 0.35;
+    pipTag.lastChild.textContent = `YOU · ${(+sp).toFixed(2).replace(/0$/, '')}×`;
+    node.classList.add('has-pip');
+    node.classList.toggle('is-bosskill', !!(d.bossKill ?? R0.bossKill));
+  }
+  function releaseMirror() {
+    const a = adopted;
+    if (!a) return;
+    adopted = null;
+    node.classList.remove('has-pip');
+    if (a.coreBox) a.coreBox.style.visibility = '';
+    if (a.c.parentNode !== pipMedia) return;                   // CORE's inset already put it back
+    if (a.style == null) a.c.removeAttribute('style'); else a.c.setAttribute('style', a.style);
+    if (a.parent) a.parent.insertBefore(a.c, a.next && a.next.parentNode === a.parent ? a.next : null); else a.c.remove();
+  }
+  const node = h('div', { class: 'bl-results is-wait' }, cine, left, right, nav);
+
+  let phase = 'wait', t = 0, statsT = -1, stampDone = false, wantReplay = 0, replayT = 0, prog = 0, sawReplay = false;
+  const expectReplay = !!stats.replay || !!ctx.game?.replayWin;
+  function setMeta(d = {}) {
+    cineLabel.textContent = String(d.label || d.title || R0.label || 'BEST MOMENT').toUpperCase();
+    const sp = d.speed ?? R0.speed ?? 0.35, hits = d.hits ?? d.window?.hits ?? R0.hits;
+    cineMeta.textContent = [sp ? `${(+sp).toFixed(2).replace(/0$/, '')}×` : null, hits ? `${hits} HITS` : null, d.seconds ?? R0.seconds ? `${(+(d.seconds ?? R0.seconds)).toFixed(1)} s` : null].filter(Boolean).join(' · ');
+  }
+  setMeta();
+  function showReplay(d) {
+    sawReplay = true; replayT = 0; prog = 0; cineFill.style.transform = 'scaleX(0)';
+    if (d) setMeta(d);
+    if (phase === 'replay') return;
+    phase = 'replay';
+    node.classList.remove('is-wait', 'is-stats'); node.classList.add('is-replay');
+    inert(true);
+  }
+  function inert(replay) { for (const x of [left, right, nav]) x.toggleAttribute('data-ui-inert', replay); cine.toggleAttribute('data-ui-inert', !replay); }
+  function showStats(why) {
+    if (phase === 'stats') return;
+    phase = 'stats';
+    node.classList.remove('is-wait', 'is-replay', 'is-pending'); node.classList.add('is-stats');
+    inert(false);
+    if (statsT < 0) statsT = t;
+    node.dataset.statsWhy = why || '';
+  }
+  function onReplayEvent(d = {}) {
+    const ty = d.type || d.phase || (d.on === true ? 'start' : d.on === false ? 'end' : Number.isFinite(d.progress) ? 'progress' : null);
+    if (ty === 'start') { showReplay(d); try { adoptMirror(d); } catch (e) { console.warn('[ui] replay pip', e); } }
+    else if (ty === 'progress') { if (phase !== 'replay' && !sawReplay) showReplay(d); prog = Math.max(0, Math.min(1, +d.progress || 0)); }
+    else if (ty === 'end') { releaseMirror(); prog = 1; cineFill.style.transform = 'scaleX(1)'; setTimeout(() => showStats('end'), 350); }
+  }
+  const offs = [];
+  if (ctx.bus?.on) offs.push(ctx.bus.on('replay', onReplayEvent));
+  if (expectReplay) { phase = 'replay-wait'; node.classList.remove('is-wait'); node.classList.add('is-replay', 'is-pending'); inert(true); }
+
+  // photo card slot (CV team)
+  function setPhotoCard(pc) {
+    photoSlot.replaceChildren();
+    if (!pc) { photoSlot.classList.add('bl-hidden'); return; }
+    const o = pc.nodeType ? { node: pc } : pc;
+    let media = o.node || o.canvas || null;
+    if (!media && o.src) media = h('img', { src: o.src, alt: o.caption || 'Photo card' });
+    photoSlot.classList.remove('bl-hidden');
+    photoSlot.classList.toggle('is-pending', !!o.pending && !media);
+    photoSlot.append(
+      h('div', { class: 'bl-res-photo-head' }, h('i', { html: ICON.cam }), h('span', {}, o.title || 'PHOTO BOOTH')),
+      h('div', { class: 'bl-res-photo-media' }, media || h('div', { class: 'bl-res-photo-wait' }, h('i', { html: ICON.cam }), h('b', {}, o.caption || 'STRIKE YOUR VICTORY POSE'))),
+      media && o.caption ? h('div', { class: 'bl-res-photo-cap' }, o.caption) : null,
+      ...(o.actions || []));
+    photoSlot.animate([{ opacity: 0, transform: 'translateY(16px)' }, { opacity: 1, transform: 'none' }], { duration: 400, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  }
+  setPhotoCard(photoCard);
+
+  function slamStamp() {
+    stampDone = true;
     stamp.classList.add('is-in');
     stamp.animate([
       { opacity: 0, transform: 'scale(4) rotate(-40deg)' },
@@ -295,23 +549,50 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle } = 
       { opacity: 1, transform: 'scale(1.06) rotate(-12deg)', offset: 0.78 },
       { opacity: 1, transform: 'scale(1) rotate(-12deg)' }], { duration: 520, easing: 'cubic-bezier(.5,0,.6,1)', fill: 'forwards' });
     stamp.querySelector('.bl-stamp-ring').animate([{ transform: 'scale(.6)', opacity: 0.9 }, { transform: 'scale(2.2)', opacity: 0 }], { duration: 700, delay: 280, easing: 'ease-out', fill: 'forwards' });
-    node.querySelector('.bl-res-left').animate([{ translate: '0 0' }, { translate: '-7px 5px' }, { translate: '6px -4px' }, { translate: '0 0' }], { duration: 240, delay: 290 });
+    left.querySelector('.bl-res-left').animate([{ translate: '0 0' }, { translate: '-7px 5px' }, { translate: '6px -4px' }, { translate: '0 0' }], { duration: 240, delay: 290 });
     try { ctx.audio?.sfx?.(rank === 'S' || rank === 'A' ? 'perfect' : 'great'); } catch { /* optional */ }
-  }, 1500);
-  let t = 0;
+    if (newBest) {
+      const nb = left.querySelector('.bl-res-newbest');
+      nb?.classList.add('is-in');
+      nb?.animate([{ opacity: 0, transform: 'scale(2.4) rotate(-8deg)' }, { opacity: 1, transform: 'scale(.94) rotate(-3deg)', offset: 0.6 }, { opacity: 1, transform: 'scale(1) rotate(-3deg)' }], { duration: 560, delay: 420, easing: 'cubic-bezier(.3,1.4,.5,1)', fill: 'both' });
+      setTimeout(() => { try { ctx.audio?.sfx?.('combo', { pitch: 1.3 }); } catch { /* */ } }, 450);
+    }
+  }
+
   return {
     node, rank,
+    get phase() { return phase; },
+    showStats: () => showStats('api'),
+    setPhotoCard,
     update(dt) {
       t += dt;
+      // replay state: bus events, or poll CORE's player
+      const rp = ctx.game?.replay;
+      if (rp && rp.active) { if (phase !== 'replay') showReplay(); prog = Math.max(prog, Math.min(1, rp.progress || 0)); }
+      else if (rp && phase === 'replay' && sawReplay && replayT > 0.5 && !rp.active && prog > 0.02) onReplayEvent({ type: 'end' });
+      if (phase === 'replay') {
+        replayT += dt;
+        cineFill.style.transform = `scaleX(${prog.toFixed(4)})`;
+        node.classList.remove('is-pending');
+        if (replayT > 30) showStats('timeout');
+      } else if (phase === 'replay-wait') {
+        if (t > 3.2) showStats('no-replay');
+      } else if (phase === 'wait') {
+        if (t > 0.4) showStats('none');
+      } else if (wantReplay && performance.now() - wantReplay > 1500) wantReplay = 0;
+      if (statsT < 0) return;
+      const st = t - statsT;
       for (const c of counters) {
         if (c.done) continue;
-        const k = Math.max(0, Math.min(1, (t - c.delay) / 1.0));
+        const k = Math.max(0, Math.min(1, (st - c.delay) / 1.0));
         const e = 1 - (1 - k) ** 3;
         const v = c.to * e;
         c.el.textContent = c.dec ? v.toFixed(c.dec) : Math.round(v).toLocaleString('en-US');
         if (k >= 1) c.done = true;
       }
+      if (!stampDone && st > 1.3) slamStamp();
     },
+    dispose() { offs.forEach((f) => { try { f?.(); } catch { /* */ } }); releaseMirror(); },
   };
 }
 

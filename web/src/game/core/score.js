@@ -2,18 +2,40 @@
 export const POINTS = { perfect: 300, great: 200, good: 100, miss: 0 };
 const FLOW_GAIN = { perfect: 0.075, great: 0.055, good: 0.035 };
 const OVERDRIVE_S = 10;
+/**
+ * Health economy per mode:
+ *   showcase  (default, no-fail): only hazards that physically hit you cost a heart (the game decides `hurt`), a heart
+ *             comes back every REGEN_HITS hits (not combo), and at 0 hearts you are "knocked down": combo, multiplier,
+ *             Flow and Overdrive are lost, the hearts refill to half, the run goes on.
+ *   challenge (strict): every miss on a target costs a heart, a heart back per 30-combo, 0 hearts = the run ends.
+ */
+export const ECONOMY = {
+  showcase: { regenHits: 8, regenCombo: 0, canFail: false },
+  challenge: { regenHits: 0, regenCombo: 30, canFail: true },
+};
 export let HEART_REGEN = 30;
-export function setHeartRegen(n) { HEART_REGEN = n; }
+export function setHeartRegen(n) { HEART_REGEN = n; ECONOMY.challenge.regenCombo = n; }
+/** Reaction tiers for a cue -> first strike measure (realistic human range ~250-450 ms). */
+export function reactionTier(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return ms <= 330 ? 'Lightning reflexes' : ms <= 400 ? 'Quick draw' : ms <= 480 ? 'Alert' : 'Steady';
+}
 /** Approximate energy per move (kcal) on top of a ~5 MET baseline for an active 70 kg player. */
 const KCAL = { punch: 0.1, kick: 0.25, jump: 0.3, squat: 0.3, dodge: 0.1, guard: 0.05, blast: 0.4 };
 
 export function multiplierFor(combo) { return combo >= 50 ? 4 : combo >= 25 ? 3 : combo >= 10 ? 2 : 1; }
 
 export class Score {
-  constructor({ bus, hearts = 5 }) {
+  constructor({ bus, hearts = 5, mode = 'showcase' }) {
     this.bus = bus;
     this.maxHealth = hearts;
+    this.setMode(mode);
     this.reset();
+  }
+  setMode(mode, hearts = this.maxHealth) {
+    this.mode = mode === 'challenge' ? 'challenge' : 'showcase';
+    this.eco = ECONOMY[this.mode];
+    this.maxHealth = hearts;
   }
   reset() {
     this.score = 0; this.combo = 0; this.maxCombo = 0; this.health = this.maxHealth;
@@ -25,6 +47,8 @@ export class Score {
     this.body = { fastestPunch: 0, maxJumpCm: 0, bestReactionMs: 0, moves: { punch: 0, kick: 0, jump: 0, squat: 0, dodge: 0, guard: 0, blast: 0, total: 0 }, kcal: 0 };
     this.failed = false;
     this.bossDefeated = false;
+    this.hitsSinceHeal = 0;
+    this.knockdowns = 0;
     this.events = [];                     // {t: song time, kind, combo} for the replay's best-window pick
   }
   get mult() { return multiplierFor(this.combo); }
@@ -54,8 +78,12 @@ export class Score {
       this.recent.push(0);
     } else {
       if (countCombo) this.combo++;
-      // a heart back every HEART_REGEN combo (keeps a 5-heart run survivable for real trackers; 0 disables)
-      if (HEART_REGEN && countCombo && this.combo % HEART_REGEN === 0 && this.health < this.maxHealth) { this.health++; this.bus.emit('heal', { health: this.health }); }
+      const E = this.eco;
+      if (E.regenHits && ++this.hitsSinceHeal >= E.regenHits) {
+        this.hitsSinceHeal = 0;
+        if (this.health < this.maxHealth) { this.health++; this.bus.emit('heal', { health: this.health }); }
+      }
+      if (E.regenCombo && countCombo && this.combo % E.regenCombo === 0 && this.health < this.maxHealth) { this.health++; this.bus.emit('heal', { health: this.health }); }
       this.maxCombo = Math.max(this.maxCombo, this.combo);
       pts = (POINTS[kind] + bonus) * this.mult * (this.overdrive ? 2 : 1);
       this.score += pts;
@@ -68,9 +96,20 @@ export class Score {
     if (this.recent.length > 16) this.recent.shift();
     this.events.push({ t: songT, kind, combo: this.combo, pts });
     if (this.events.length > 400) this.events.shift();
+    if (this.health <= 0) {
+      if (this.eco.canFail) this.failed = true;
+      else this._knockdown();
+    }
     this.emit();
-    if (this.health <= 0) this.failed = true;
     return pts;
+  }
+  /** Showcase: 0 hearts never ends the run; it costs the combo, the multiplier, Flow and Overdrive. */
+  _knockdown() {
+    this.knockdowns++;
+    this.combo = 0; this.flow = 0; this.hitsSinceHeal = 0;
+    if (this.overdrive) this.setOverdrive(false);
+    this.health = Math.max(1, Math.ceil(this.maxHealth / 2));
+    this.bus.emit('knockdown', { health: this.health, count: this.knockdowns });
   }
   addBonus(points) { const p = points * this.mult * (this.overdrive ? 2 : 1); this.score += p; this.emit(); return p; }
   setOverdrive(on) {
@@ -109,7 +148,7 @@ export class Score {
     const base = 4 * 70 * (this.playTime / 3600);
     const b = this.body;
     return {
-      cleared, failed: this.failed, bossDefeated: this.bossDefeated,
+      cleared, failed: this.failed, bossDefeated: this.bossDefeated, mode: this.mode, knockdowns: this.knockdowns,
       score: Math.round(this.score), rank: this.rank, accuracy: this.accuracy, maxCombo: this.maxCombo,
       judgements: { ...this.judgements },
       body: {
@@ -117,6 +156,7 @@ export class Score {
         moves: b.moves.total, moveCounts: { ...b.moves }, kcal: b.kcal + base,
         // aliases (UI results cards)
         punchSpeed: b.fastestPunch || null, jumpHeight: b.maxJumpCm || null, reactionMs: b.bestReactionMs || null,
+        reactionTier: reactionTier(b.bestReactionMs),
       },
       playTime: this.playTime,
     };

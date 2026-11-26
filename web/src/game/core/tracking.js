@@ -59,15 +59,16 @@ export class Tracking {
    * Start a tracker. kind: 'auto' | 'hmr' | 'mediapipe' | 'demo', or a ready source object (autoplay).
    * Resolves to the kind actually running. 'auto' falls back hmr -> mediapipe -> demo.
    */
-  async start(kind, { custom = null } = {}) {
+  async start(kind, { custom = null, kind: customKind = 'autoplay', demoFactory = null } = {}) {
     this.stop();
     const token = (this._token = Symbol('start'));
-    if (custom) return this._run(custom, 'autoplay');
+    if (custom) return this._run(custom, customKind);
+    const demo = () => (demoFactory ? demoFactory() : new SyntheticSource());
     const order = kind === 'auto' ? ['hmr', 'mediapipe', 'demo'] : [kind];
     for (const k of order) {
       if (token !== this._token) return null;
       try {
-        if (k === 'demo') return this._run(new SyntheticSource(), 'demo');
+        if (k === 'demo') return this._run(demo(), 'demo');
         if (!this.camera.active) {
           this.onStatus('connecting', 'Opening camera…');
           await this.camera.start();
@@ -83,10 +84,10 @@ export class Tracking {
       } catch (e) {
         console.info(`[tracking] ${k} unavailable: ${e?.name === 'NotAllowedError' ? 'camera permission denied' : e?.message || e}`);
         this.source?.stop?.(); this.source = null;
-        if (order.length === 1) { this.onStatus('error', `${k} failed: ${e?.message || e}`); return this._run(new SyntheticSource(), 'demo'); }
+        if (order.length === 1) { this.onStatus('error', `${k} failed: ${e?.message || e}`); return this._run(demo(), 'demo'); }
       }
     }
-    return this._run(new SyntheticSource(), 'demo');
+    return this._run(demo(), 'demo');
   }
 
   _run(src, kind) {

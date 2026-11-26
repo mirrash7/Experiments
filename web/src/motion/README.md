@@ -136,6 +136,99 @@ Cost: one draw for all sprites + one per visible trail, no per-frame allocation,
   for ~8 s, which read as still-pose jitter (guard out 0.10-0.125 vs raw 0.04). `jitter.ok` now also requires
   out <= 1.2 x raw when raw > 0.02 rad/s; `jitter.ratio` = out / raw.
 
+### Detection robustness round (BREAKLIGHT design QA r1: P0-3, P1-1, P1-2)
+
+Monocular depth is 3-5x noisier than x/y (3-8 cm vs 1-2 cm). The detector now leans on the image plane.
+
+- **Action stream filter**: the light one-euro is now anisotropic (`DETECT.xyMinCutoff` 2.5 Hz / beta 3 for x/y,
+  `zMinCutoff` 1.5 Hz / beta 0.5 for depth). Slow raw depth costs no punch latency because fast depth comes from the
+  image plane (next point).
+- **Depth-lifted arm** (`_liftArm`): each arm segment's depth is recovered from its 2D foreshortening against its
+  calibrated length (|dz| = sqrt(L^2 - d2D^2)). This is exact when the bone points at the camera. The tracker depth
+  only gives the sign. It is fused with the raw dz by inverse variance, because the lift is ill-conditioned for bones
+  lying in the image plane.
+- **Punches** compare the current frame against a baseline frame ~110 ms back, using three cues. Each cue is
+  normalised by its own running noise level, so a clean InstantHMR stream fires on small, early changes and a noisy
+  MediaPipe stream needs more:
+  - `zExt`: elbow extension (shoulder-elbow-wrist opening) of the lifted arm. Torso pitch does not change it.
+  - `zFore`: image-plane foreshortening of the whole arm. This is pure 2D.
+  - `zDepth`: raw tracker depth of the fist relative to the shoulder. This is a weak, clamped vote.
+
+  A punch fires when:
+  - `zExt + zFore + 0.5 zDepth >= punchZ`, with about 2 of 3 soft votes;
+  - the arm is at least 66 % extended;
+  - the fist is in front of the shoulder;
+  - the fist travels mostly toward the camera (image-plane fist displacement < 1.25 x the depth gain; rise or drop
+    < 8 cm + 0.2 x the gain);
+  - the fist is at hip to head height.
+
+  Kept from QA v3 r2: no punch while hands are up, in a T-pose, while that hand is up, or during a jump take-off. The
+  two arms never fire inside 150 ms of each other.
+
+  **One-frame confirmation**: when the previous frame showed no build-up (< `punchPrevZ`), the punch waits one frame
+  for confirmation. It is still stamped with the first frame's `tCapture`, so the judged timing does not move.
+- **Phantom suppression**: no punches in these cases:
+  - while a leg is raised (ankle > 0.26 torso above the other, or knee > 0.2), and for 280 ms after the foot comes
+    down or a kick fires (balance arm swing);
+  - during a jump dip or duck (hips or head vertical speed > 0.45 m/s);
+  - during a dodge transition (torso tilt speed > 1.6 rad/s);
+  - while both arms extend together: the other arm shows >= 25 % of the evidence *and* >= 45 % of the physical
+    change. This covers a guard raise, the two-hand blast push and arm swings. The occluded other arm counts with
+    its last evidence for 100 ms.
+  - A frame whose 2D bone length exceeds 1.3 x calibrated (a tracking jump) is ignored.
+- **Hands up / charge**: a per-hand confidence, `handConfidence.{left,right}`, comes from either of these:
+  - the tracked wrist above the nose (ramp over 8 cm);
+  - the elbow > 0.12 torso above the shoulder with the wrist at head height (0.75);
+  - when the wrist is clipped or low confidence: the elbow raised above the shoulder (ramp 0.05 to 0.25 torso,
+    x0.9, x0.7 if the extrapolated wrist sits below the elbow).
+
+  A whole-arm dropout holds the last value (fading) for 0.4 s. `handsUpConfidence = min(left, right)`. `handsUp`
+  enters at >= 0.55 and leaves below 0.35, after 3 frames. `leftHandUp` / `rightHandUp` use the same hysteresis.
+- **Duck** (`squat` state, plus the `duck` alias in `state`) enters on either of these:
+  - the old hip drop;
+  - the nose *or* shoulder line dropping > 0.3 torso below the calibrated standing height, with a fast head drop
+    (> 0.35 m/s within the last 0.8 s). This works with untracked knees: a waist bend or a bob.
+
+  It leaves below 0.2 torso (hips: 0.25). The standing baseline follows slow posture drift while the player is
+  upright and still.
+- **Seated mode** (`actions.seated = true`, then `recalibrate()` / `motion.calibrate()` while seated): a duck is a
+  head or shoulder drop below the calibrated *seated* height only (no hip rule). Jumps, kicks and leg gating are off.
+  The `squat` event info carries `seated: true`. The bench config `seated` covers it.
+- Missing joints (a wrist, legs or ankles absent from a frame, not only low confidence) no longer throw. A missing
+  wrist with a raised elbow counts toward hands up. `tPose` holds through up to 2 dropped frames.
+- **Guard** uses the lifted fist depth instead of the raw depth. It has hysteresis, and an arm that drops out keeps
+  the guard for 0.4 s.
+- **Bench** (`moveBench.js`, run by `node web/src/motion/triggerTest.js [--full] [--quick] [--detector=path]` and
+  `lab.moveBench({seeds})`) has these moves:
+  - punches L/R: varied target, speed and shoulder drive;
+  - kicks L/R with a balancing arm swing;
+  - jumps with arms overhead or swung;
+  - duck: hip squat, or waist bend / bob;
+  - duck with the head only and no legs tracked;
+  - dodges L/R;
+  - guard;
+  - charge, and charge with the wrists clipped out of the top of the frame;
+  - negatives: idle, T-pose, wave.
+
+  Noise is anisotropic: depth is half white and half AR(1). There are also dropped frames, limb occlusions with
+  frozen or jumping points, and 25-30 Hz with ±12 % jitter. It runs in 5 configs: mild, mid, harsh, upper body
+  with no legs, and seated. Targets: >= 97 % per move in each config, and <= 1 phantom per 100 moves. Bench punches reach >= 80 %
+  arm extension; a shorter jab is by design not a punch.
+
+**API additions** (all additive):
+- `ActionDetector.handsUpConfidence` (0..1), `handConfidence.{left,right}` and the `seated` flag.
+- `state.duck` (alias of `squat`), `state.leftHandRaised` / `state.rightHandRaised` (that hand up, regardless of the
+  other).
+- `stats` = `{punchNearMiss, suppressed: {kick, jump, lean, body}}` counters for `?debug=1` overlays.
+- `debug` flag: per-arm punch cue values in `_dbg`.
+- Event info:
+  - `handsUp`: `confidence`;
+  - `squat`: `via: 'hips' | 'head'`;
+  - punches: `score` (evidence) and `confirmed` (waited one frame); `speed` is now the arm extension speed (m/s).
+- `DETECT` (exported tunables).
+- `LightPoseFilter({zMinCutoff, zBeta})`.
+- `runTriggerTest({Detector})`, `runRobustness()`, `BENCH_CONFIGS` (triggerTest.js), `runMoveBench`, `formatBench`.
+
 ## Stages
 
 ```
@@ -204,7 +297,7 @@ Measured (headless Chrome, M-series, Sakurada VRM0, `lab.measure()`):
 
 ## Files
 
-`pipeline.js` orchestration · `mhrFK.js` MHR FK + validation · `solvers.js` MHR / keypoint solvers ·
+`pipeline.js` orchestration · `moveBench.js` move-detection robustness bench · `mhrFK.js` MHR FK + validation · `solvers.js` MHR / keypoint solvers ·
 `heroRig.js` VRM hierarchy + hero rest skeleton + hero FK · `track.js` predictor + springs · `ik.js` two-bone IK,
 contacts, foot lock, hinge limits · `layers.js` procedural base, confidence, accents · `hands.js` hand
 classification + authored poses · `metrics.js` · `math.js` · `lab.js` motion lab page.

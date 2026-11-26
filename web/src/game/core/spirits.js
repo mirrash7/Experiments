@@ -7,25 +7,41 @@ const TELE_EPS = 1e-6;
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const _v = new THREE.Vector3();
 
-/** Hit point of a note in world space (hero at the origin facing +Z, its left = +X), scaled to the hero height h. */
+/**
+ * Hit point of a note in world space (hero at the origin facing +Z, its left = +X), scaled to the hero height h.
+ * Staging for the 3/4 rear gameplay camera, which sits ~28 deg off axis on the hero's RIGHT (-X): strikes land at
+ * arm's / leg's reach in front of the hero, the left ones pushed wider so they clear the torso from that camera and
+ * read beside the left fist; volleys pass beside the shoulder; the brute stops at striking distance; reaction
+ * strikers pop up farther out where they can't hide behind the hero.
+ */
 export function hitPointFor(note, h, out) {
   const k = h / 1.6, sx = note.side === 'left' ? 1 : note.side === 'right' ? -1 : 0;
+  const lat = (r, l) => (sx > 0 ? l : sx < 0 ? -r : 0) * k;     // right-side / left-side lateral offset
+  if (note.react && note.type === 'striker') return out.set(lat(0.72, 0.82), 0.84 * h, 1.15 * k);
   switch (note.type) {
-    case 'striker': return out.set(sx * 0.3 * k, 0.8 * h, 0.58 * k);
-    case 'crawler': return out.set(sx * 0.22 * k, 0.2, 0.62 * k);
+    case 'striker': return out.set(lat(0.44, 0.62), 0.78 * h, 0.72 * k);
+    case 'crawler': return out.set(lat(0.3, 0.38), 0.2, 0.82 * k);
     case 'sweep': return out.set(0, 0.12, 0);
     case 'scythe': return out.set(0, 0.9 * h, 0);
-    case 'volley': return out.set(sx * 0.3 * k, 0.78 * h, 0);
-    case 'brute': return out.set(0, 0, 1.45 * k);
+    case 'volley': return out.set(lat(0.5, 0.55), 0.8 * h, 0.12 * k);
+    case 'brute': return out.set(0, 0, 2.05 * k);
     case 'core': return out.set(0, 0.86 * h, 2.1 * k);
-    default: return out.set(0, h * 0.7, 0.6);
+    default: return out.set(0, h * 0.7, 0.7 * k);
   }
+}
+
+/** Where an unanswered strike lunges after its beat (the hero's chest / shins). */
+const LUNGE_BEATS = 0.45;
+function lungePoint(n, out) {
+  return out.set(n.to.x * 0.25, n.type === 'crawler' ? n.to.y : n.to.y * 0.92, 0.12);
 }
 
 /**
  * Path position of a note at a beat (pure function of the note's path params; also used by the replay).
- * Flyers arc in from the rift and reach `to` exactly on n.beat; hazards keep going past; the brute walks in and
- * arrives a beat early; cores and reaction strikers hold their spot.
+ * Flyers curve in from the rift and reach `to` exactly on n.beat: a lateral hook (`swirl`) that peaks late (~70 % of
+ * the flight) so the curve reads from the rear camera, plus a vertical arc. Strikes not answered by their beat lunge
+ * at the hero; hazards keep going past; the brute walks in and arrives a beat early; cores and reaction strikers
+ * hold their spot.
  */
 export function pathPos(n, beat, p) {
   const arriveBeat = n.type === 'brute' ? n.beat - 1 : n.beat;
@@ -35,17 +51,20 @@ export function pathPos(n, beat, p) {
     const u = clamp01(s);
     const e = n.type === 'brute' ? u : u * (0.85 + 0.15 * u);   // slight acceleration into the strike
     p.lerpVectors(n.from, n.to, e);
-    const bump = Math.sin(Math.PI * u);
-    if (n.arc) p.y += n.arc * bump * (1 - u * 0.5);
-    if (n.swirl) p.x += n.swirl * bump;
+    if (n.arc) p.y += n.arc * Math.sin(Math.PI * Math.pow(u, 1.25)) * (1 - u * 0.4);
+    if (n.swirl) p.x += n.swirl * Math.sin(Math.PI * u * u);
   } else if (n.type === 'brute' || n.type === 'core' || n.react) {
     p.copy(n.to);
     if (n.type === 'core') p.y += Math.sin(beat * 1.3) * 0.08;
+  } else if (n.type === 'striker' || n.type === 'crawler') {
+    const u = clamp01((beat - n.beat) / LUNGE_BEATS);
+    p.lerpVectors(n.to, lungePoint(n, _l), u * u);
   } else {
     p.copy(n.to).addScaledVector(n.dir, (beat - n.beat) * n.speed);
   }
   return p;
 }
+const _l = new THREE.Vector3();
 
 export class SpiritField {
   /**
@@ -121,8 +140,9 @@ export class SpiritField {
     n.dir.copy(n.to).sub(n.from);
     n.speed = n.dir.length() / Math.max(0.5, n.beat - n.spawnBeat);   // world units per beat
     n.dir.normalize();
-    n.arc = n.type === 'striker' || n.type === 'core' ? 1.2 : n.type === 'volley' ? 0.6 : 0;
-    n.swirl = n.type === 'striker' ? sx * 0.8 : 0;
+    // curves: strikers hook in from outside their lane, crawlers skitter wide, volleys swing in from their side
+    n.arc = n.type === 'striker' || n.type === 'core' ? 1.2 : n.type === 'volley' ? 0.7 : 0;
+    n.swirl = n.type === 'striker' ? sx * 2.2 : n.type === 'crawler' ? sx * 1.1 : n.type === 'volley' ? sx * 1.8 : 0;
     n.phase = 'fly'; n.hits = 0; n.cuePerf = 0; n.endBeat = n.beat;
     try {
       n.view = n.makeView ? n.makeView(n) : V.spirits.create(n.type, { side: n.side, position: n.from, target: n.to, react: !!n.react, boss: !!n.boss, beat: n.beat, act: n.act });

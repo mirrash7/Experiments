@@ -13,7 +13,8 @@ import { RecordedSource, Recorder } from '../sources/recordedSource.js';
 import { HMRSource } from '../sources/hmrSource.js';
 import { Camera } from '../sources/camera.js';
 import { createFx } from '../fx/index.js';
-import { runTriggerTest, formatTriggerTest } from './triggerTest.js';
+import { runTriggerTest, formatTriggerTest, runRobustness } from './triggerTest.js';
+import { formatBench } from './moveBench.js';
 
 const $ = (id) => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
@@ -270,7 +271,8 @@ function step(dt) {
 
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
 
-const lab = { events: [], THREE, step, setSource, cam, controls, triggerTest: (o) => { const r = runTriggerTest(o); r.text = formatTriggerTest(r); return r; }, get vrm() { return vrm; }, get source() { return source; } };
+const lab = { events: [], THREE, step, setSource, cam, controls, triggerTest: (o) => { const r = runTriggerTest(o); r.text = formatTriggerTest(r); return r; },
+  moveBench: (o = { seeds: [1] }) => { const r = runRobustness(o); r.text = Object.entries(r.configs).map(([n, c]) => formatBench(c, n)).join('\n\n'); return r; }, get vrm() { return vrm; }, get source() { return source; } };
 /** Automation: run a source for `ms` with a fixed 60 Hz update loop (works with the tab hidden), return metrics. */
 lab.measure = async (name, ms = 8000, opts = {}, warm = 2500) => {
   lab.manual = true;

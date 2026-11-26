@@ -1,8 +1,14 @@
 // Tutorial: 7 short drills (punch, kick, jump, duck, dodge, guard, charge-blast), each with a looping hint figure,
-// live verification from the motion pipeline's action detector + the tracked 3D joints, 3 good reps to pass and
-// coaching feedback on near misses ("FASTER!", "HIGHER!", "LOWER!", "HOLD IT!"). Upper-body-only mode skips the
-// kick and jump drills. Measured values (wrist speed, jump height, squat depth…) are shown live.
+// live verification from the motion pipeline's action detector (the same ctx.motion.actions events gameplay judges:
+// a rep is a detector event, never a separate speed heuristic), 3 reps to pass and coaching feedback on near misses
+// ("FASTER!", "HIGHER!", "LOWER!", "HOLD IT!"). Upper-body-only mode skips the kick and jump drills. Measured values
+// from the tracked 3D joints (wrist speed, jump height, squat depth…) are shown live as hints only.
+// The charge-blast drill uses the SAME detector as gameplay (core/charge.js ChargeDetector): when CORE runs it during
+// the tutorial (ctx.game.charge + bus 'charge' / 'blast') the drill listens to those events, otherwise (UI lab) it runs
+// its own ChargeDetector instance on ctx.motion. Every drill change is announced on the bus:
+//   bus.emit('tutorial', { drill, index, total, reps, phase: 'drill'|'rep'|'done' })   (lets the demo/autoplay player act it out)
 import { h, uiButton, freshFrame, torsoForward } from './body.js';
+import { ChargeDetector } from '../core/charge.js';
 
 export const ALL_DRILLS = ['punch', 'kick', 'jump', 'duck', 'dodge', 'guard', 'blast'];
 const LOWER_BODY = new Set(['kick', 'jump']);
@@ -135,9 +141,11 @@ function createMeasure() {
 
 // ------------------------------------------------------------------ screen
 export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
-  const upper = !!ctx.settings?.upperBodyOnly;
+  const seated = !!ctx.settings?.seated;
+  const upper = !!ctx.settings?.upperBodyOnly || seated;
   let list = (steps && steps.length ? steps.map((s) => (typeof s === 'string' ? s : s.id)) : ALL_DRILLS).filter((s) => DRILL_INFO[s]);
   if (upper) list = list.filter((s) => !LOWER_BODY.has(s));
+  if (seated) list = list.filter((s) => s !== 'duck');        // same rule as CORE's seated chart (no scythes to duck)
   const sfx = (n, o) => { try { ctx.audio?.sfx?.(n, o); } catch { /* optional */ } };
 
   const stepEls = list.map((id, i) => h('li', { class: 'bl-tut-step' }, h('i', {}, String(i + 1)), h('span', {}, DRILL_INFO[id].title)));
@@ -155,7 +163,7 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
   const card = h('div', { class: 'bl-tut-card' }, h('div', { class: 'bl-tut-cardhead' }, idxEl, pips), titleEl, textEl, sideEl,
     h('div', { class: 'bl-tut-meter' }, meterLab, h('span', { class: 'bl-tut-meter-bar' }, meterFill, meterPeak), meterVal));
   const node = h('div', { class: 'bl-tut' },
-    h('aside', { class: 'bl-tut-list' }, h('div', { class: 'bl-kicker' }, upper ? 'TRAINING · UPPER BODY' : 'TRAINING'), h('ol', {}, stepEls)),
+    h('aside', { class: 'bl-tut-list' }, h('div', { class: 'bl-kicker' }, seated ? 'TRAINING · SEATED' : upper ? 'TRAINING · UPPER BODY' : 'TRAINING'), h('ol', {}, stepEls)),
     card, fbEl,
     h('aside', { class: 'bl-tut-hint' }, h('div', { class: 'bl-kicker' }, 'WATCH & COPY'), hintBox),
     h('div', { class: 'bl-tut-nav' },
@@ -163,9 +171,40 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
       guarded(uiButton('SKIP DRILL', () => next(true), { cls: 'is-small', id: 'tut-skip' }))));
 
   const M = createMeasure();
-  const R = { i: -1, id: null, reps: 0, lastRep: -1e9, tip: { t: -1e9 }, attempt: null, peak: 0, done: false, results: {}, charge: 0, charged: 0, guardT: 0, guardArmed: true, side: 'left', meter: 0, clearing: false };
+  const R = { i: -1, id: null, reps: 0, lastRep: -1e9, tip: { t: -1e9 }, attempt: null, peak: 0, done: false, results: {}, charge: 0, charged: 0, guardT: 0, guardPend: 0, side: 'left', meter: 0, clearing: false };
   let chargeLoop = null;
   const stopCharge = () => { try { chargeLoop?.stop?.(); } catch { /* */ } chargeLoop = null; };
+  const announce = (phase) => { try { ctx.bus?.emit?.('tutorial', { drill: R.id, index: R.i, total: list.length, reps: R.reps, phase }); } catch (e) { console.error(e); } };
+
+  // ---- charge-blast: the gameplay detector (CORE's instance via the bus, or our own on ctx.motion)
+  const CH = { level: 0, charged: false, core: !!(ctx.game?.charge && ctx.bus?.on), det: null };
+  function onChargeLevel(lv, charged) {
+    if (R.id !== 'blast' || R.done) { CH.level = lv; CH.charged = charged; return; }
+    if (charged && !CH.charged) { feedback('PUSH!', 'cue', 'both palms forward'); node.classList.add('is-charged'); sfx('combo', { pitch: 1.5 }); }
+    if (!CH.core) {
+      if (lv > 0 && !chargeLoop) { try { chargeLoop = ctx.audio?.sfxLoop?.('chargeHum'); } catch { /* */ } }
+      if (lv <= 0) stopCharge();
+    }
+    if (lv <= 0 && (CH.level > 0 || CH.charged) && performance.now() - (CH.blastAt || 0) > 400) {
+      if (CH.charged) tip('PUSH FASTER!', 'both palms forward, hard'); else if (CH.level > 0.25) tip('KEEP CHARGING!', 'hands up for a full second');
+      node.classList.remove('is-charged');
+    }
+    CH.level = lv; CH.charged = charged;
+  }
+  function onBlastFired() {
+    CH.blastAt = performance.now(); CH.level = 0; CH.charged = false;
+    node.classList.remove('is-charged'); stopCharge();
+    if (R.id !== 'blast' || R.done) return;
+    rep('BREAKLIGHT!');
+    if (!CH.core) sfx('blast');
+  }
+  const offCh = [];
+  if (CH.core) {
+    offCh.push(ctx.bus.on('charge', (d) => onChargeLevel(+d?.level || 0, !!d?.charged)));
+    offCh.push(ctx.bus.on('blast', onBlastFired));
+  } else {
+    CH.det = new ChargeDetector({ onLevel: (lv, charged) => { if (lv !== CH.level || charged !== CH.charged) onChargeLevel(lv, charged); }, onBlast: onBlastFired, onCancel: () => onChargeLevel(0, false) });
+  }
 
   function feedback(text, kind = 'tip', sub = '') {
     fbEl.className = 'bl-tut-fb is-on k-' + kind;
@@ -192,6 +231,7 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
     sfx(R.reps >= REPS ? 'perfect' : 'great');
     (R.results[R.id] ||= []).push(sub);
     if (R.id === 'dodge') { R.side = R.side === 'left' ? 'right' : 'left'; showSide(); }
+    announce('rep');
     if (R.reps >= REPS) clear();
     return true;
   }
@@ -213,7 +253,7 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
     if (R.i >= 0 && skipped) stepEls[R.i].classList.add('is-skipped');
     R.i++;
     if (R.i >= list.length) { finish(false); return; }
-    Object.assign(R, { id: list[R.i], reps: 0, attempt: null, peak: 0, charge: 0, charged: 0, guardT: 0, guardArmed: true, side: 'left', clearing: false, meter: 0, lastRep: performance.now() });
+    Object.assign(R, { id: list[R.i], reps: 0, attempt: null, peak: 0, charge: 0, charged: 0, guardT: 0, guardPend: 0, guardHeld: false, side: 'left', clearing: false, meter: 0, lastRep: performance.now() });
     const D = DRILL_INFO[R.id];
     stepEls.forEach((e, i) => e.classList.toggle('is-cur', i === R.i));
     idxEl.textContent = `DRILL ${R.i + 1} / ${list.length}`;
@@ -225,10 +265,12 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
     showSide();
     card.animate([{ opacity: 0, transform: 'translate(-50%, -16px)' }, { opacity: 1, transform: 'translate(-50%, 0)' }], { duration: 360, easing: 'cubic-bezier(.2,.8,.2,1)' });
     node.dataset.drill = R.id;
+    announce('drill');
   }
   function finish(exited) {
     if (R.done) return;
     R.done = true; stopCharge();
+    announce('done');
     const completed = list.filter((_, i) => stepEls[i].classList.contains('is-done'));
     if (exited) { onSkip?.(); onDone?.({ completed, exited: true, results: R.results }); return; }
     const end = h('div', { class: 'bl-tut-complete' }, h('b', {}, 'TRAINING COMPLETE'), h('span', {}, `${completed.length} / ${list.length} drills cleared`));
@@ -238,22 +280,29 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
     setTimeout(() => onDone?.({ completed, exited: false, results: R.results }), 1600);
   }
 
-  // ---- action events (player-side names)
-  const off = ctx.motion?.actions?.on?.((name, info) => {
+  // ---- action events (player-side names). Reps are counted from the SAME detector events gameplay judges
+  // (ctx.motion.actions: punchLeft/Right, kickLeft/Right, jump, squat, leanLeft/Right / stepLeft/Right, guard) and, for
+  // the blast drill, CORE's charge detector (bus 'blast'). The measured values (wrist speed, foot height, hip rise…)
+  // are only coaching hints in the praise line; they never veto a rep the detector already accepted.
+  const SIDE = (name) => (name.endsWith('Left') ? 'left' : 'right');
+  const off = ctx.motion?.actions?.on?.((name, info = {}) => {
     if (R.done || R.clearing || !R.id) return;
     const id = R.id;
     if (id === 'punch' && (name === 'punchLeft' || name === 'punchRight')) {
-      const v = Math.max(info.speed ?? 0, M.wristFwd);
-      if (v < 2.2) tip('FASTER!', 'snap it out'); else rep(`${v.toFixed(1)} m/s ${name === 'punchLeft' ? 'left' : 'right'}`);
+      const v = Math.max(+info.speed || 0, M.wristFwd);
+      rep(`${v.toFixed(1)} m/s ${SIDE(name)}${v < 2.2 ? ' · snap it faster' : ''}`);
     } else if (id === 'kick' && (name === 'kickLeft' || name === 'kickRight')) {
-      rep(`${Math.round(M.footLift * 100)} cm ${name === 'kickLeft' ? 'left' : 'right'}`);
+      const cm = Math.round(M.footLift * 100);
+      rep(`${cm > 5 ? cm + ' cm ' : ''}${SIDE(name)}${cm > 5 && M.footLift / M.ruler < 0.28 ? ' · knee higher' : ''}`);
     } else if (id === 'jump' && name === 'jump') {
-      if (rep('JUMP!')) { const at = R.reps; R.peak = M.hipRise; setTimeout(() => { if (R.id === 'jump' && fbEl.querySelector('small')) fbEl.querySelector('small').textContent = `${Math.round(R.peak * 100)} cm`; void at; }, 380); }
+      if (rep('JUMP!')) { R.peak = M.hipRise; setTimeout(() => { const sm = fbEl.querySelector('small'); if (R.id === 'jump' && sm && R.peak > 0.02) sm.textContent = `${Math.round(R.peak * 100)} cm`; }, 380); }
     } else if (id === 'duck' && name === 'squat') {
-      setTimeout(() => rep(`${Math.round(M.hipDrop * 100)} cm low`), 120);
+      if (rep('DUCK!')) setTimeout(() => { const sm = fbEl.querySelector('small'); if (R.id === 'duck' && sm && M.hipDrop > 0.03) sm.textContent = `${Math.round(M.hipDrop * 100)} cm low`; }, 160);
     } else if (id === 'dodge' && /^(lean|step)(Left|Right)$/.test(name)) {
-      const side = name.endsWith('Left') ? 'left' : 'right';
+      const side = SIDE(name);
       if (side === R.side) rep(name.startsWith('lean') ? 'lean' : 'step'); else tip('OTHER WAY!', `dodge to your ${R.side}`);
+    } else if (id === 'guard' && name === 'guard') {
+      R.guardPend = performance.now(); R.guardHeld = false;   // a fresh block starts; update() verifies it is held
     }
   });
 
@@ -308,35 +357,29 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
         case 'dodge':
           setMeter(Math.abs(M.tilt) * 57.3, D); break;
         case 'guard': {
-          if (st.guard && R.guardArmed) {
-            R.guardT += dt;
-            if (R.guardT >= 0.6) { R.guardArmed = false; rep('blocked'); R.guardT = 0; }
-          } else if (!st.guard) {
-            if (R.guardT > 0.18 && R.guardArmed) tip('HOLD IT!', 'keep both fists up');
-            R.guardT = 0; R.guardArmed = true;
+          // the detector's held guard: its 'guard' event (or the guard already being up when the drill starts) begins a
+          // block; every GUARD_HOLD s it stays up counts one blocked hit (gameplay also accepts a guard held through the
+          // hit moment), so both "raise on cue" and "hold the block" pass. Dropping it early coaches HOLD IT!
+          const GUARD_HOLD = 0.6, now = performance.now();
+          if (st.guard) {
+            if (!R.guardPend) R.guardPend = now;
+            R.guardT = (now - R.guardPend) / 1000;
+            if (R.guardT >= GUARD_HOLD && rep(R.guardHeld ? 'still blocking' : 'blocked')) { R.guardPend = now; R.guardT = 0; R.guardHeld = true; }
+          } else {
+            if (R.guardPend && R.guardT > 0.18 && !R.guardHeld) tip('HOLD IT!', 'keep both fists up');
+            R.guardPend = 0; R.guardT = 0; R.guardHeld = false;
           }
-          setMeter(R.guardArmed ? (R.guardT / 0.6) * 100 : 100 * (st.guard ? 1 : 0), D); break;
+          setMeter(st.guard ? Math.min(1, R.guardT / GUARD_HOLD) * 100 : 0, D); break;
         }
         case 'blast': {
-          const now = performance.now();
-          if (R.charged) {
-            // charged: wait for the two-hand push (both wrists driving forward, arms extending in front)
-            const push = Math.min(M.wristFwdL, M.wristFwdR) > 1.3 && Math.min(M.extL, M.extR) > 0.72 && Math.min(M.reachL, M.reachR) > 0.3;
-            if (push) { R.charged = 0; R.charge = 0; stopCharge(); rep('BREAKLIGHT!'); try { ctx.audio?.sfx?.('blast'); } catch { /* */ } node.classList.remove('is-charged'); }
-            else if (now - R.charged > 2200) { R.charged = 0; R.charge = 0; stopCharge(); node.classList.remove('is-charged'); tip('PUSH FASTER!', 'both palms forward, hard'); }
-          } else if (st.handsUp) {
-            if (!chargeLoop && R.charge === 0) { try { chargeLoop = ctx.audio?.sfxLoop?.('chargeHum'); } catch { /* */ } }
-            R.charge = Math.min(1, R.charge + dt / 1.0);
-            if (R.charge >= 1) { R.charged = now; feedback('PUSH!', 'cue'); node.classList.add('is-charged'); }
-          } else if (R.charge > 0) {
-            if (R.charge > 0.25) tip('KEEP CHARGING!', 'hands up for a full second');
-            R.charge = 0; stopCharge();
-          }
-          node.style.setProperty('--charge', R.charged ? 1 : R.charge.toFixed(3));
-          setMeter((R.charged ? 1 : R.charge) * 100, D); break;
+          if (CH.det) CH.det.update(dt, ctx.motion, ctx.hero?.info?.height || 1.6);
+          const lv = CH.charged ? 1 : CH.level;
+          node.style.setProperty('--charge', lv.toFixed(3));
+          setMeter(lv * 100, D); break;
         }
       }
     },
-    dispose() { off?.(); stopCharge(); },
+    get charge() { return { level: CH.level, charged: CH.charged, source: CH.core ? 'core' : 'local' }; },
+    dispose() { off?.(); offCh.forEach((f) => { try { f?.(); } catch { /* */ } }); stopCharge(); },
   };
 }

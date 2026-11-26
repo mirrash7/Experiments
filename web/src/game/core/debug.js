@@ -21,6 +21,7 @@ export function createDebugOverlay() {
         `tracker ${s.tracker} ${s.trackFps} fps  lat ${Math.round(s.trackLat)} ms  lost ${s.lostFor.toFixed(1)} s`,
         `spirits live ${s.live} pending ${s.pending}   draws ${s.draws} tris ${(s.tris / 1000).toFixed(0)}k`,
         `score ${s.score}  combo ${s.combo} x${s.mult}  hp ${s.health}  flow ${(s.flow * 100) | 0}%${s.overdrive ? ' OD' : ''}`,
+        `mode ${s.mode}  knockdowns ${s.knockdowns}${s.awaken ? `  awaken lag ${s.awaken.offset.toFixed(1)}b${s.awaken.waiting ? ' WAIT ' + s.awaken.waiting : ''}` : ''}${s.boss ? `  boss stage ${s.boss.stage + 1} blasts ${s.boss.blasts} tries ${s.boss.tries}` : ''}`,
         `P/G/g/M ${s.j.perfect}/${s.j.great}/${s.j.good}/${s.j.miss}  mean err ${s.meanErr.toFixed(0)} ms  sd ${s.sdErr.toFixed(0)}`,
         `core ${s.coreMs.toFixed(2)} ms  motion ${s.motionMs.toFixed(2)} ms  charge ${(s.charge * 100) | 0}%`,
         s.bot ? `bot delays ${JSON.stringify(s.bot)}` : '',

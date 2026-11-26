@@ -133,13 +133,22 @@ export function inkMaterial({ color = '#1a0a10', width = 0.025, time, wigSpeed =
 
 // --------------------------------------------------------------------------------------- billboard glow sprite
 // A single camera-facing quad: soft halo + hot core. Scale the mesh to size it (world metres = scale).
+const PULL_GLSL = /* glsl */`
+// perspective-invariant depth pull: scaling a view-space position toward the eye keeps its screen position (and,
+// applied to the whole quad, its screen size) but moves its depth closer, so bursts draw over the hero's body.
+vec3 pullView(vec3 mv, vec3 centre, float pull){ float d = length(centre); return pull > 0.0 ? mv * max(0.05, (d - pull) / max(d, 1e-3)) : mv; }
+`;
 const BILL_VERT = /* glsl */`
+uniform float uPull;
 varying vec2 vUv;
+${PULL_GLSL}
 void main(){
   vUv = position.xy * 2.0;
   float s = length(modelMatrix[0].xyz);
   vec4 mv = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+  vec3 c = mv.xyz;
   mv.xy += position.xy * s;
+  mv.xyz = pullView(mv.xyz, c, uPull);
   gl_Position = projectionMatrix * mv;
 }`;
 const HALO_FRAG = /* glsl */`
@@ -158,12 +167,12 @@ void main(){
 let _quad = null;
 export const unitQuad = () => (_quad ??= new THREE.PlaneGeometry(1, 1));
 
-export function haloMaterial({ color = '#ff8a2a', core = '#fff4d6', intensity = 1, coreSize = 0.22, rays = 0, time } = {}) {
+export function haloMaterial({ color = '#ff8a2a', core = '#fff4d6', intensity = 1, coreSize = 0.22, rays = 0, time, pull = 0 } = {}) {
   return new THREE.ShaderMaterial({
     vertexShader: BILL_VERT, fragmentShader: HALO_FRAG, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     uniforms: {
       uColor: { value: new THREE.Color(color) }, uCore: { value: new THREE.Color(core) }, uIntensity: { value: intensity },
-      uCoreSize: { value: coreSize }, uTime: time ?? { value: 0 }, uRays: { value: rays },
+      uCoreSize: { value: coreSize }, uTime: time ?? { value: 0 }, uRays: { value: rays }, uPull: { value: pull },
     },
   });
 }
@@ -239,7 +248,9 @@ export const G = { glow: 0, star: 1, ring: 2, streak: 3, diamond: 4, cross: 5 };
 const GP_VERT = /* glsl */`
 attribute vec3 iPos; attribute vec3 iDir; attribute vec4 iColor; attribute vec4 iParam;  // size, stretch, rot, shape
 attribute float iLife;
+uniform float uPull;
 varying vec2 vUv; varying vec4 vColor; varying float vShape; varying float vLife;
+${PULL_GLSL}
 void main(){
   vUv = position.xy * 2.0; vColor = iColor; vShape = iParam.w; vLife = iLife;
   vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
@@ -249,7 +260,9 @@ void main(){
     vec2 ax = length(d.xy) > 1e-5 ? normalize(d.xy) : vec2(1.0, 0.0); vec2 ay = vec2(-ax.y, ax.x);
     off = ax * c.x * size * iParam.y + ay * c.y * size * 0.16;
   } else { float r = iParam.z; vec2 cs = vec2(cos(r), sin(r)); off = vec2(c.x * cs.x - c.y * cs.y, c.x * cs.y + c.y * cs.x) * size; }
+  vec3 c0 = mv.xyz;
   mv.xy += off;
+  mv.xyz = pullView(mv.xyz, c0, uPull);
   gl_Position = projectionMatrix * mv;
 }`;
 const GP_FRAG = /* glsl */`
@@ -272,7 +285,7 @@ const _c = new THREE.Color();
 const _colorCache = new Map();
 function cachedColor(c) { if (typeof c !== 'string') return c; let v = _colorCache.get(c); if (!v) { v = new THREE.Color(c); _colorCache.set(c, v); } return v; }
 export class GlowPool {
-  constructor(max = 256) {
+  constructor(max = 256, { pull = 0 } = {}) {
     this.max = max;
     const g = new THREE.InstancedBufferGeometry();
     const q = unitQuad(); g.index = q.index; g.attributes.position = q.attributes.position;
@@ -281,7 +294,7 @@ export class GlowPool {
     g.setAttribute('iPos', this.aPos); g.setAttribute('iDir', this.aDir); g.setAttribute('iColor', this.aColor);
     g.setAttribute('iParam', this.aParam); g.setAttribute('iLife', this.aLife);
     g.instanceCount = 0; g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
-    this.mat = new THREE.ShaderMaterial({ vertexShader: GP_VERT, fragmentShader: GP_FRAG, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    this.mat = new THREE.ShaderMaterial({ vertexShader: GP_VERT, fragmentShader: GP_FRAG, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, uniforms: { uPull: { value: pull } } });
     this.mesh = new THREE.Mesh(g, this.mat); this.mesh.frustumCulled = false; this.mesh.renderOrder = 12; this.mesh.visible = false;
     this.alive = new Uint8Array(max); this.t = new Float32Array(max); this.life = new Float32Array(max);
     this.vel = new Float32Array(max * 3); this.drag = new Float32Array(max); this.grav = new Float32Array(max);
@@ -336,8 +349,9 @@ export class GlowPool {
 // position + rotation from uT, so a burst costs no CPU per frame beyond one uniform.
 const SHARD_VERT = /* glsl */`
 attribute vec3 aVel; attribute vec4 aAxis; attribute float aSize;
-uniform float uT; uniform vec3 uOrigin; uniform vec3 uImpulse; uniform float uGrav; uniform float uScale; uniform float uSpeed; uniform float uDrag;
+uniform float uT; uniform vec3 uOrigin; uniform vec3 uImpulse; uniform float uGrav; uniform float uScale; uniform float uSpeed; uniform float uDrag; uniform float uPull;
 varying vec3 vView; varying float vSeed;
+${PULL_GLSL}
 vec3 rot(vec3 v, vec3 a, float ang){ float c = cos(ang), s = sin(ang); return v * c + cross(a, v) * s + a * dot(a, v) * (1.0 - c); }
 void main(){
   vSeed = aAxis.w;
@@ -348,6 +362,7 @@ void main(){
   float shrink = 1.0 - smoothstep(0.55, 1.0, t / 1.3);
   vec3 p = rot(position * aSize * uScale * shrink, normalize(aAxis.xyz), t * (4.0 + aAxis.w * 9.0) + aAxis.w * 6.0);
   vec4 mv = viewMatrix * vec4(c + p, 1.0);
+  mv.xyz = pullView(mv.xyz, (viewMatrix * vec4(c, 1.0)).xyz, uPull);
   vView = mv.xyz;
   gl_Position = projectionMatrix * mv;
 }`;
@@ -397,16 +412,16 @@ export class ShardBurst {
       vertexShader: SHARD_VERT, fragmentShader: SHARD_FRAG,
       uniforms: {
         uT: { value: 0 }, uOrigin: { value: new THREE.Vector3() }, uImpulse: { value: new THREE.Vector3() }, uGrav: { value: 9 },
-        uScale: { value: 0.3 }, uSpeed: { value: 5 }, uDrag: { value: 1.6 }, uDeep: { value: new THREE.Color() }, uBright: { value: new THREE.Color() }, uHot: { value: 1 },
+        uScale: { value: 0.3 }, uSpeed: { value: 5 }, uDrag: { value: 1.6 }, uPull: { value: 0 }, uDeep: { value: new THREE.Color() }, uBright: { value: new THREE.Color() }, uHot: { value: 1 },
       },
     });
     this.mesh = new THREE.Mesh(g, this.mat); this.mesh.frustumCulled = false; this.mesh.visible = false;
     this.t = 0; this.life = 1.3; this.active = false;
   }
-  fire(origin, impulse, deep, bright, { scale = 0.3, speed = 5, grav = 9, life = 1.3, count = this.count, hot = 1, drag = 1.6 } = {}) {
+  fire(origin, impulse, deep, bright, { scale = 0.3, speed = 5, grav = 9, life = 1.3, count = this.count, hot = 1, drag = 1.6, pull = 0 } = {}) {
     const u = this.mat.uniforms;
     u.uOrigin.value.copy(origin); u.uImpulse.value.copy(impulse); u.uDeep.value.set(deep); u.uBright.value.set(bright);
-    u.uScale.value = scale; u.uSpeed.value = speed; u.uGrav.value = grav; u.uT.value = 0; u.uHot.value = hot; u.uDrag.value = drag;
+    u.uPull.value = pull; u.uScale.value = scale; u.uSpeed.value = speed; u.uGrav.value = grav; u.uT.value = 0; u.uHot.value = hot; u.uDrag.value = drag;
     this.mesh.geometry.instanceCount = Math.min(count, this.count);
     this.t = 0; this.life = life; this.active = true; this.mesh.visible = true;
   }

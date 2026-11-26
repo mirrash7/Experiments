@@ -12,7 +12,7 @@ import { DEFAULT_VRM } from '../vrm/models.js';
 import { createMotionPipeline } from '../motion/index.js';
 import { createFx } from '../fx/index.js';
 import { createBus } from './core/bus.js';
-import { loadSettings } from './core/settings.js';
+import { loadSettings, audioVolume } from './core/settings.js';
 import { createGameClock } from './core/clock.js';
 import { createStubAudio, createStubVisuals, createStubUI, fillMissing } from './core/stubs.js';
 import { CameraDirector } from './core/camera.js';
@@ -75,11 +75,11 @@ ctx.quality = quality;
 const AUDIO_KEYS = ['unlock', 'clock', 'playSong', 'setIntensity', 'setOverdrive', 'stopSong', 'sfx', 'sfxLoop', 'setVolume'];
 let audio = null;
 const audioMod = await realModule('audio');
-try { audio = audioMod?.createAudio?.({ volume: settings.volume }) ?? null; } catch (e) { console.warn('[boot] createAudio failed, using beeps', e); }
+try { audio = audioMod?.createAudio?.({ volume: audioVolume(settings) }) ?? null; } catch (e) { console.warn('[boot] createAudio failed, using beeps', e); }
 if (!audio) audio = createStubAudio();
 else if (AUDIO_KEYS.some((k) => !audio[k])) { const filled = fillMissing(audio, createStubAudio()); console.info('[boot] audio: stand-ins for', filled.join(', ')); }
 ctx.audio = audio;
-try { audio.setVolume?.(settings.volume); } catch { /* */ }
+try { audio.setVolume?.(audioVolume(settings)); } catch { /* */ }
 const clock = createGameClock(audio);
 const unlock = () => { try { audio.unlock(); } catch { /* */ } };
 addEventListener('pointerdown', unlock, { capture: true });
@@ -94,6 +94,10 @@ const debug = dev.debug ? createDebugOverlay() : null;
 const game = new Game(ctx, { clock, tracking, director, debug });
 ctx.game = game;
 ctx.clock = clock;
+ctx.director = director;
+director.bind?.(ctx);
+director.setUpcoming?.((aheadSec) => game.upcomingHit(aheadSec));
+director.blastFrontFirst = true;      // the bloom bump on blasts is now short and low (0.55), so the front shot reads
 
 bus.on('score', (s) => {
   ui.hud.setScore(Math.round(s.score));
@@ -154,9 +158,32 @@ async function loadWorld() {
   }
   ctx.visuals = visuals;
   if (visuals.stage.object && !visuals.stage.object.parent) worldScene.add(visuals.stage.object);
+  await loadCV();
   try { visuals.boss?.hide?.(); } catch { /* */ }
   visualsReady = true;
   bootStatus?.('Ready', 'ready');
+}
+
+/**
+ * CV features (Mirror Moment silhouette + Photo Booth). Optional: the game runs without them if the import or setup
+ * fails (ctx.mirror / ctx.booth stay null and every game hook is guarded).
+ */
+async function loadCV() {
+  if (useStub('cv')) return;
+  try {
+    const cv = await import('./cv/index.js');
+    ctx.cv = cv;
+    const mirror = ctx.mirror = cv.createMirror({ video: tracking.video, renderer, scene: worldScene, camera, hero, quality: quality.preset.id });
+    bus.on('quality', ({ preset }) => { try { mirror.setQuality(preset); } catch { /* */ } });
+    ctx.booth = cv.createPhotoBooth({
+      video: tracking.video, renderer, heroScene, camera, hero, mirror, motion,
+      getStats: () => game.lastResults ?? game.score.results({ cleared: true }), overlayParent: ui.root,
+      onCountdown: () => audio.sfx('countdown'), onFlash: () => audio.sfx('perfect'),
+    });
+  } catch (e) {
+    console.warn('[boot] CV features unavailable, continuing without them', e);
+    ctx.mirror = null; ctx.booth = null;
+  }
 }
 
 /** No-op versions of every VISUAL method, so a partial real module never throws in the loop. */
@@ -170,27 +197,59 @@ async function stubVisualsMethodsOnly() {
   };
 }
 
+/**
+ * The chart-reading bot. ?autoplay=1 uses it as the QA tracker; the no-camera 'demo' player is the same bot (so the
+ * demo strikes the calibration T-pose, performs the tutorial drills and plays the chart instead of looping a canned
+ * animation).
+ */
+function makeBot({ skill, jitterMs, demo = false }) {
+  const notes = [];
+  const bot = new AutoplaySource({
+    clock, skill, jitterMs,
+    model: demo ? 'Demo player (no camera)' : null,
+    // during the Awakening, only notes up to the next waiting spirit (their times move while it waits)
+    getNotes: () => {
+      notes.length = 0;
+      let lim = Infinity;
+      if (game.awk) { for (const n of game.field.live) if (n.waitFor && !n.resolved) lim = Math.min(lim, n.beat); for (const n of game.field.pending) if (n.waitFor) lim = Math.min(lim, n.beat); }
+      for (const n of game.field.live) if (n.beat <= lim) notes.push(n);
+      for (const n of game.field.pending) if (n.beat <= lim) notes.push(n);
+      return notes;
+    },
+    noteTime: (n) => game.judge.noteTime(n),
+    isWaiting: (n) => game.awk?.waiting === n,
+    getMode: () => {
+      const s = game.state;
+      if (s === 'calibrate') return 'tpose';
+      if (s === 'tutorial') { const d = game._tutDrill ?? game._tutorial?.drill; return d ? 'drill:' + d : 'idle'; }
+      return s === 'run' || s === 'boss' ? 'play' : 'idle';
+    },
+  });
+  return bot;
+}
+
 async function startTracker(kind) {
-  if (kind === 'autoplay') {
-    const notes = [];
-    const bot = new AutoplaySource({
-      clock,
-      getNotes: () => { notes.length = 0; for (const n of game.field.live) notes.push(n); for (const n of game.field.pending) notes.push(n); return notes; },
-      getMode: () => (game.state === 'calibrate' ? 'tpose' : game.state === 'run' || game.state === 'boss' ? 'play' : 'idle'),
-      skill: params.get('botSkill') != null ? +params.get('botSkill') : 1,
+  if (kind === 'autoplay' || kind === 'demo' || kind === 'synthetic') {
+    const demo = kind !== 'autoplay';
+    const bot = makeBot({
+      demo,
+      skill: params.get('botSkill') != null ? +params.get('botSkill') : demo ? 0.9 : 1,
       jitterMs: params.get('botJitter') != null ? +params.get('botJitter') : 22,
     });
     game.bot = bot;
-    await tracking.start('autoplay', { custom: bot });
+    await tracking.start(demo ? 'demo' : 'autoplay', { custom: bot, kind: demo ? 'demo' : 'autoplay' });
     bot.listen(motion.actions);
   } else {
-    await tracking.start(kind === 'synthetic' ? 'demo' : kind);
+    await tracking.start(kind, { demoFactory: () => { const b = makeBot({ demo: true, skill: 0.9, jitterMs: 22 }); game.bot = b; setTimeout(() => b.listen(motion.actions)); return b; } });
   }
   motion.setSource(tracking.source);
   motion.calibrate();
   game.setTrackerKind(tracking.kind);
   if (tracking.camera.active) ui.hud.pip.setVideo(tracking.video);
-  tracking.onFrame = (f) => { if (f.kp2d && f.kp2d.length) ui.hud.pip.setSkeleton(f.kp2d, f.edges, { selfie: tracking.kind === 'hmr' || tracking.kind === 'mediapipe' }); };
+  tracking.onFrame = (f) => {
+    if (f.kp2d && f.kp2d.length) ui.hud.pip.setSkeleton(f.kp2d, f.edges, { selfie: tracking.kind === 'hmr' || tracking.kind === 'mediapipe' });
+    if (ctx.mirror) { try { ctx.mirror.setTrackerFrame(f); } catch { /* */ } }
+  };
   console.info(`[boot] tracker: ${tracking.kind}${tracking.source?.model ? ' (' + tracking.source.model + ')' : ''}`);
 }
 
@@ -233,6 +292,7 @@ function frame() {
       visuals.vfx.update(dt);
     } catch (e) { if (!frame._warned) { frame._warned = true; console.warn('[loop] visuals update threw', e); } }
     fxScale = fx?.update(dt) ?? 1;
+    if (ctx.mirror) { try { ctx.mirror.update(dt, { beat: T.beat, overdrive: game.score.overdrive, act: game.act }); } catch (e) { if (!frame._cvWarned) { frame._cvWarned = true; console.warn('[loop] mirror.update threw', e); } } }
   } else {
     director.update(dt, null);
   }
@@ -277,10 +337,15 @@ function demoResults() {
 // keyboard fallbacks + dev keys
 addEventListener('keydown', (e) => {
   if (e.target?.tagName === 'INPUT' || e.target?.tagName === 'SELECT') return;
+  if (game.state === 'results' && game.replaying && (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ')) { game.skipReplay(); return; }
+  if (game.awk && game.state === 'run' && (e.key === 'Enter' || e.key === 's' || e.key === 'S')) { game.skipAwaken(); return; }
   if (e.key === 'Escape' && (game.state === 'run' || game.state === 'boss')) game.setState('pause', { reason: 'manual' });
-  if (e.key === 'Enter' && game.state === 'title') game.setState('run');
+  if (e.key === 'Enter' && game.state === 'title') game.play();
   if (e.key === 'Enter' && game.state === 'calibrate') { motion.calibrate(); game.setState('title'); }
 });
+
+// results intro replay: a click / tap skips to the stats
+addEventListener('pointerdown', () => { if (game.state === 'results' && game.replaying && game._replayIntro) game.skipReplay(); });
 
 // QA / console handles
 Object.assign(window, { ctx, game, bus, clock, tracking, director, quality, THREE });

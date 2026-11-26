@@ -21,16 +21,23 @@ renderer.info.autoReset = false;
 const worldScene = new THREE.Scene();
 const heroScene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.05, 600);
+// cameras mirror core/camera.js SHOTS (+ the QA-proposed 3/4 rear and front blast shots)
 const CAMS = {
-  gameplay: { pos: [0, 2.2, -4], look: [0, 1.25, 4] },
-  front: { pos: [1.6, 1.45, 3.6], look: [0, 1.25, 0] },
-  side: { pos: [4.2, 1.7, 1.2], look: [0, 1.6, 6] },
-  wide: { pos: [6, 4.5, -9], look: [0, 3, 30] },
-  boss: { pos: [0, 1.4, -3], look: [0, 6, 40] },
-  low: { pos: [2.5, 0.6, -3], look: [0, 2.2, 10] },
+  gameplay: { pos: [-0.78, 2.05, -3.3], look: [0.22, 1.12, 5.0], fov: 50 },
+  rear30: { pos: [-1.25, 1.85, -2.9], look: [0.3, 1.15, 4.0], fov: 50 },
+  boss: { pos: [-0.7, 1.75, -3.9], look: [0.1, 2.6, 12.0], fov: 54 },
+  bossIntro: { pos: [0.55, 0.55, -2.3], look: [0, 4.5, 22], fov: 46 },
+  blastFront: { pos: [2.4, 1.35, 2.6], look: [-0.3, 1.3, 1.2], fov: 40 },
+  front: { pos: [1.6, 1.45, 3.6], look: [0, 1.25, 0], fov: 38 },
+  side: { pos: [4.2, 1.7, 1.2], look: [0, 1.6, 6], fov: 44 },
+  wide: { pos: [6, 4.5, -9], look: [0, 3, 30], fov: 50 },
+  low: { pos: [2.5, 0.6, -3], look: [0, 2.2, 10], fov: 46 },
 };
 let camGoal = CAMS.gameplay; const camLook = new THREE.Vector3();
-function setCam(name, snap = true) { camGoal = CAMS[name] ?? CAMS.gameplay; if (snap) { camera.position.set(...camGoal.pos); camLook.set(...camGoal.look); camera.lookAt(camLook); } }
+function setCam(name, snap = true) {
+  camGoal = (typeof name === 'object' ? name : CAMS[name]) ?? CAMS.gameplay;
+  if (snap) { camera.position.set(...camGoal.pos); camLook.set(...camGoal.look); camera.lookAt(camLook); if (camGoal.fov) { camera.fov = camGoal.fov; camera.updateProjectionMatrix(); } }
+}
 setCam('gameplay');
 
 const post = createPostChain(renderer, worldScene, heroScene, camera);
@@ -76,13 +83,14 @@ const HIT = {
 const BEATS = { striker: 3, crawler: 4, sweep: 4, scythe: 4, volley: 3, brute: 6, core: 5 };
 const live = [];
 const rift = visuals.stage.rift;
-function spawn(type, { side = Math.random() < 0.5 ? 1 : -1, result = outcome, delay = 0 } = {}) {
+function spawn(type, { side = Math.random() < 0.5 ? 1 : -1, result = outcome, delay = 0, react = false } = {}) {
   const hitPos = HIT[type](side);
   let start;
-  if (type === 'crawler' || type === 'brute' || type === 'sweep') start = new THREE.Vector3(hitPos.x * 3, 0, 26);
+  if (react) start = hitPos.clone();
+  else if (type === 'crawler' || type === 'brute' || type === 'sweep') start = new THREE.Vector3(hitPos.x * 3, 0, 26);
   else start = rift.clone();
-  const view = visuals.spirits.create(type, { side: side > 0 ? 'left' : side < 0 ? 'right' : 'center', position: start, target: hitPos });
-  live.push({ view, type, start, hitPos, t: -delay, dur: BEATS[type] * BEAT, result, done: false, side, punches: 0 });
+  const view = visuals.spirits.create(type, { side: side > 0 ? 'left' : side < 0 ? 'right' : 'center', position: start, target: hitPos, react });
+  live.push({ view, type, start, hitPos, t: -delay, dur: (react ? 1.2 : BEATS[type]) * BEAT, result, done: false, side, punches: 0 });
   return view;
 }
 const _p = new THREE.Vector3(), _dir = new THREE.Vector3();
@@ -136,7 +144,7 @@ function blast() {
   const target = visuals.boss.state === 'active' ? visuals.boss.weakPoint : new THREE.Vector3(0, 6, 120);
   const dir = target.clone().sub(o).normalize();
   if (hero) { applyPose(hero, 'punchR'); setTimeout(() => hero && applyPose(hero, 'armsDown'), 900); }
-  visuals.vfx.blast(o, dir, { length: o.distanceTo(target) + 20 });
+  visuals.vfx.blast(o, dir);   // target auto-detected (boss weak point / core spirit on the ray)
   visuals.vfx.shockwave(new THREE.Vector3(o.x, 0, o.z), { color: '#ffd070', size: 10 });
   if (visuals.boss.state === 'active') setTimeout(() => visuals.boss.hit('perfect'), 120);
 }
@@ -165,6 +173,7 @@ const outBtns = outcomeModes.map((m) => mkBtn('outcomes', m, () => { outcome = m
 outBtns[0].classList.add('on');
 for (const t of visuals.spirits.types) mkBtn('spawns', t, () => spawn(t));
 $('wave').onclick = () => wave(8);
+mkBtn('spawns', 'react!', () => spawn('striker', { react: true }));
 $('clear').onclick = () => { visuals.spirits.releaseAll(); live.length = 0; };
 mkBtn('bossBtns', 'Show', () => { setAct('boss'); visuals.boss.show(); });
 mkBtn('bossBtns', 'Slam', () => bossAttack('slam'));
@@ -182,6 +191,11 @@ mkBtn('vfxBtns', 'BLAST', blast);
 mkBtn('vfxBtns', 'Shockwave', () => visuals.vfx.shockwave(new THREE.Vector3(0, 0, 0)));
 mkBtn('vfxBtns', 'Judgements', () => { ['perfect', 'great', 'good', 'miss'].forEach((k, i) => visuals.vfx.judgement(new THREE.Vector3(0.9 - i * 0.6, 1.5, 0.8), k)); });
 mkBtn('vfxBtns', 'Pulse', () => visuals.stage.pulse(1.5));
+// ground cues: each kind ramps 0 -> 1 over 2 beats (as CORE would call it every frame)
+let cueRun = null;
+function cue(kind, beats = 2) { cueRun = { kind, t: 0, dur: beats * BEAT }; }
+mkBtn('vfxBtns', 'Cue jump', () => cue('jump')); mkBtn('vfxBtns', 'Cue duck', () => cue('duck'));
+mkBtn('vfxBtns', 'Cue guard', () => cue('guard')); mkBtn('vfxBtns', 'Cue blast', () => cue('blast'));
 for (const c of Object.keys(CAMS)) mkBtn('camBtns', c, () => setCam(c));
 let beatOn = true; $('beat').onclick = () => { beatOn = !beatOn; $('beat').classList.toggle('on', beatOn); };
 $('hero').onclick = () => { if (hero) { hero.root.visible = !hero.root.visible; $('hero').classList.toggle('on', hero.root.visible); } };
@@ -200,6 +214,7 @@ function frame(dtOverride) {
   songTime += dt;
   const beat = songTime / BEAT;
   stepSpirits(dt);
+  if (cueRun) { cueRun.t += dt; visuals.vfx.groundCue(cueRun.kind, Math.min(1, cueRun.t / cueRun.dur)); if (cueRun.t > cueRun.dur) cueRun = null; }
   visuals.stage.update(dt, { beat: beatOn ? beat : undefined, act: curAct, intensity: 0.5, overdrive });
   visuals.spirits.update(dt);
   visuals.boss.update(dt);
@@ -232,8 +247,10 @@ loop();
 // ------------------------------------------------------------------------------------------- automation
 const rt = new THREE.WebGLRenderTarget(64, 64);
 window.lab = {
-  visuals, hero, camera, renderer, quality, setAct, spawn, wave, blast, charge, setCam, bossAttack,
+  visuals, hero, camera, renderer, quality, setAct, spawn, wave, blast, charge, setCam, bossAttack, cue, CAMS,
   outcome: (m) => { outcome = m; },
+  /** Synchronous boss attack: telegraph over n frames (0 -> 1), then attack(). */
+  attackSync(name, n = 84) { for (let i = 1; i <= n; i++) { visuals.boss.telegraph(name, i / n); frame(1 / 60); } visuals.boss.attack(name); },
   overdrive: (on) => { overdrive = on; refreshAura(); },
   /** Advance the simulation n frames synchronously (rAF is throttled in headless/background tabs). */
   step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) frame(dt); return stats; },

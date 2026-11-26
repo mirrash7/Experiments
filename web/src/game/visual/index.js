@@ -16,6 +16,24 @@
 //   view.block() for a guarded hit.
 // - boss.show() closes the rift (the Warden stands behind it); boss.hide() reopens it.
 // - Camera shake: VISUAL adds trauma to ctx.fx (CombatFx.trauma) on blasts / boss slams / the defeat boom.
+//
+// R1 additions (all additive; existing calls unchanged):
+// - Combat layer (spirits, trails, warnings, shatters, burst sprites) now lives in heroScene, depth-tested against the
+//   hero; hit / judgement bursts are depth-pulled 1 m toward the camera so they draw over the hero's body.
+// - spirits.create(type, { react: true }) -> reaction-test pop-in (white flash, rings, elastic scale pop).
+// - vfx.aura(on, { color, strength, mode?: 'charge'|'overdrive' }): mode is inferred from a saturated gold colour.
+// - vfx.blast(origin, dir, { target?, length?, radius? }): the beam ends at `target`, else auto-detects the boss weak
+//   point / an active core spirit on the ray (impact flare there), else 160 m. Default radius 0.62 (sheath ~0.45 m).
+// - vfx.groundCue(kind, t): glyph at the hero's feet. kind 'jump'|'duck'|'guard'|'blast'|'dodgeL'|'dodgeR' (null
+//   clears). Call every frame from ~2 beats ahead with t = 0..1 progress (ring closes + flashes at 1); it fades out
+//   ~0.25 s after the last call.
+// - stage.setCameraClear(pos, r) / setFocus(v) / setSightline(v): near props (platform trees, pillars, close
+//   islands) dither out when near the camera, between the camera and the hero (auto focus: hero chest), inside the
+//   boss weak-point sightline cone (auto while the boss stands), or inside the explicit clear sphere.
+// - boss.head(out) (world head position), boss.introT (0..1 emergence), boss.shown. weakPoint is valid right after
+//   show() (rest pose), so projectiles / blast targets built at boss start are correct.
+// - Boss scale ~2x angular (BOSS_POS 0,-9.8,118, scale 19.3): chest core ~5 deg, head ~20 deg above the horizon from
+//   the hero; the eclipse sits behind the head (palette 'boss' el 0.33).
 import * as THREE from 'three';
 import { GlowPool, ShardPool, qualityId } from './common.js';
 import { createStage, PALETTES, RIFT_POS } from './stage.js';
@@ -30,20 +48,26 @@ export async function createVisuals(ctx) {
   const time = { value: 0 };
   const worldFx = new THREE.Group(); worldFx.name = 'worldFx';
   const worldGlow = new GlowPool(640);
+  const burstGlow = new GlowPool(320, { pull: 1.0 });   // hit / judgement bursts: depth-pulled 1 m toward the camera
   const shards = new ShardPool(12, 32);
-  worldFx.add(worldGlow.mesh, shards.group);
+  worldFx.add(worldGlow.mesh, burstGlow.mesh, shards.group);
 
   const shared = {
-    time, worldFx, worldGlow, shards, palette: null,
+    time, worldFx, worldGlow, burstGlow, shards, palette: null,
     trauma(x) { const fx = ctx.fx; if (fx && typeof fx.trauma === 'number' && fx.options?.shake !== false) fx.trauma = Math.min(1, fx.trauma + x); },
   };
   const stage = createStage(ctx, shared);
   shared.palette = stage.palette;
-  stage.object.add(worldFx);
+  // combat layer (spirits, their trails / warnings, shatters, bursts) renders in heroScene: it is depth-tested against
+  // the hero instead of being painted over by the hero pass, so hits in front of / beside the hero stay visible.
+  (ctx.heroScene ?? stage.object).add(worldFx);
   const spirits = createSpirits(ctx, shared);
-  spirits.sys.parent = stage.object;
+  spirits.sys.parent = worldFx;
+  shared.spiritsActive = () => spirits.active;
   const boss = createBoss(ctx, shared);
+  shared.bossView = boss;
   stage.object.add(boss.object);
+  stage.setBoss?.(boss);
   const vfxMod = createVfx(ctx, shared);
   (ctx.heroScene ?? stage.object).add(vfxMod.group);
 
@@ -52,6 +76,9 @@ export async function createVisuals(ctx) {
   shared.onSlam = (heroPos) => { vfxMod.api.shockwave(heroPos, { color: '#ff7050', size: 8, dur: 0.6 }); stage.pulse(2); };
   shared.onDefeatBoom = () => { stage.pulse(3); };
   spirits.sys.onHit = (view, kind) => { stage.pulse(kind === 'perfect' ? 0.9 : 0.5); };
+
+  // results: the pinned boss-kill replay ("WARDEN DEFEATED") re-stages the Warden (CORE hides it on entering results)
+  const offReplay = bindKillReplay(ctx, boss, vfxMod.api);
 
   let qid = qualityId(ctx.quality);
   stage.setQuality(qid);
@@ -66,7 +93,7 @@ export async function createVisuals(ctx) {
       boss.object.visible = true;
       const scene = new THREE.Scene(); scene.fog = ctx.worldScene?.fog ?? null; scene.add(stage.object); if (!ctx.heroScene) scene.add(vfxMod.group);
       ctx.renderer.compile(scene, ctx.camera);
-      if (ctx.heroScene) ctx.renderer.compile(vfxMod.group, ctx.camera);
+      if (ctx.heroScene) { ctx.renderer.compile(vfxMod.group, ctx.camera); ctx.renderer.compile(worldFx, ctx.camera); }
       scene.remove(stage.object);
     } catch (e) { console.warn('[visual] precompile skipped', e); }
     boss.object.visible = false;
@@ -85,13 +112,14 @@ export async function createVisuals(ctx) {
       setAct: stage.setAct,
       pulse: stage.pulse,
       setRiftOpen: stage.setRiftOpen,
+      setFocus: stage.setFocus, setSightline: stage.setSightline, setCameraClear: stage.setCameraClear,
       snap: stage.snap,
       get act() { return stage.act; },
       palette: stage.palette,
     },
     spirits: {
       create: spirits.create,
-      update(dt) { tick(); spirits.update(dt); shards.update(dt); worldGlow.update(dt); },
+      update(dt) { tick(); spirits.update(dt); shards.update(dt); worldGlow.update(dt); burstGlow.update(dt); },
       releaseAll: spirits.releaseAll,
       types: spirits.types,
       get activeCount() { return spirits.active.size; },
@@ -102,15 +130,82 @@ export async function createVisuals(ctx) {
       blast: vfxMod.api.blast,
       judgement: vfxMod.api.judgement,
       shockwave: vfxMod.api.shockwave,
+      groundCue: vfxMod.api.groundCue,
       update(dt) { tick(); vfxMod.api.update(dt); },
     },
     /** Debug: counts for the lab / perf overlay. */
-    stats() { return { spirits: spirits.active.size, sprites: worldGlow.active + vfxMod.glow.active, shardBursts: shards.active, quality: qid, buildMs: Math.round(tBuild) }; },
+    stats() { return { spirits: spirits.active.size, sprites: worldGlow.active + burstGlow.active + vfxMod.glow.active, shardBursts: shards.active, quality: qid, buildMs: Math.round(tBuild) }; },
     dispose() {
-      spirits.dispose(); boss.dispose(); vfxMod.dispose(); stage.dispose(); worldGlow.dispose(); shards.dispose();
-      vfxMod.group.parent?.remove(vfxMod.group); stage.object.parent?.remove(stage.object);
+      offReplay?.();
+      spirits.dispose(); boss.dispose(); vfxMod.dispose(); stage.dispose(); worldGlow.dispose(); burstGlow.dispose(); shards.dispose();
+      vfxMod.group.parent?.remove(vfxMod.group); worldFx.parent?.remove(worldFx); stage.object.parent?.remove(stage.object);
     },
   };
   const tBuild = performance.now() - t0;
   return visuals;
+}
+
+/**
+ * Boss-kill replay on the results screen. CORE emits bus 'replay' { phase: 'start', bossKill, window: clip, seconds,
+ * speed } / { phase: 'progress', progress } / { phase: 'end' }. For a boss-kill clip the Warden is shown standing (chest
+ * open), dies again when the replay reaches the kill (the Breaklight beam fires from the hero's hands into its core)
+ * and is hidden when the replay ends. The kill time comes from CORE's BossScript (game.boss.defeatBeat mapped through
+ * the clip's beat track), else the pin's 1.5 s lead-in. The replay clock is CORE's ReplayPlayer song time.
+ * Camera: it asks CORE's director (game.cameraCut) for its 'bossKill' two-shot for the replay's length (the default
+ * front 'replay' framing looks away from the Warden, which stands at +Z behind that camera) and releases it at the end.
+ */
+function bindKillReplay(ctx, boss, vfx) {
+  if (!ctx.bus?.on || !boss.replayKill) return null;
+  const st = { on: false, clip: null, p: 0, cut: false };
+  const songT = () => {
+    const R = ctx.game?.replay, c = st.clip;
+    if (R?.active && R.win === c && Number.isFinite(R.t)) return R.t;
+    return c ? c.t0 + st.p * (c.t1 - c.t0) : NaN;
+  };
+  const defeatTime = (c) => {
+    const db = ctx.game?.boss?.defeatBeat;
+    if (Number.isFinite(db) && c.beats && c.times && c.count > 1) {
+      for (let i = 1; i < c.count; i++) {
+        if (c.beats[i] >= db) { const b0 = c.beats[i - 1], b1 = c.beats[i], u = b1 > b0 ? (db - b0) / (b1 - b0) : 1; return c.times[i - 1] + (c.times[i] - c.times[i - 1]) * Math.min(1, Math.max(0, u)); }
+      }
+    }
+    return Math.min(c.t1 - 0.2, c.t0 + 1.5);
+  };
+  const _o = new THREE.Vector3(), _a = new THREE.Vector3(), _d = new THREE.Vector3();
+  const killBlast = () => {
+    const B = ctx.hero?.bones;
+    if (B?.leftHand && B?.rightHand) { B.leftHand.getWorldPosition(_o); B.rightHand.getWorldPosition(_a); _o.add(_a).multiplyScalar(0.5); }
+    else _o.set(0, 1.25 * ((ctx.hero?.info?.height || 1.6) / 1.6), 0.35);
+    const target = boss.weakPoint.clone();
+    _d.subVectors(target, _o).normalize();
+    vfx.blast(_o.clone(), _d.clone(), { target });
+  };
+  const start = (d) => {
+    const c = d.window;
+    if (!c || !Number.isFinite(c.t0) || !Number.isFinite(c.t1)) return;
+    st.on = true; st.clip = c; st.p = 0;
+    boss.replayKill({ clock: songT, tDefeat: defeatTime(c), tEnd: c.t1, onKill: killBlast });
+    const dir = ctx.game?.director;
+    st.cut = false;
+    // (a cut to the same shot only extends it, so this is harmless once CORE frames the replay itself; it also
+    // replaces the live kill shot that may still be running from the fight)
+    if (dir && typeof ctx.game.cameraCut === 'function') st.cut = !!ctx.game.cameraCut('bossKill', (+d.seconds || (c.t1 - c.t0) / (d.speed || 0.35)) + 0.5);
+  };
+  const end = () => {
+    if (!st.on) return;
+    st.on = false; st.clip = null;
+    boss.endReplay();
+    const dir = ctx.game?.director;
+    if (st.cut && dir?.shot === 'bossKill') dir.endShot?.();
+    st.cut = false;
+  };
+  return ctx.bus.on('replay', (d = {}) => {
+    try {
+      const ty = d.phase || d.type || (d.on === true ? 'start' : d.on === false ? 'end' : null);
+      const kill = !!(d.bossKill || /WARDEN|BOSS/i.test(String(d.label || '')));
+      if (ty === 'start') { if (st.on) end(); if (kill) start(d); }
+      else if (ty === 'progress' && st.on && Number.isFinite(d.progress)) st.p = d.progress;
+      else if (ty === 'end') end();
+    } catch (e) { console.warn('[visual] kill replay', e); }
+  });
 }
