@@ -161,7 +161,8 @@ void main(){
   float core = smoothstep(uCoreSize, uCoreSize * 0.55, r);
   float th = atan(vUv.y, vUv.x);
   float rays = uRays * pow(max(0.0, cos(th * 4.0 + uTime * 1.3)), 24.0) * (1.0 - r) * 1.2;
-  vec3 col = uColor * (halo + rays) * uIntensity + uCore * core * (1.0 + uIntensity * 0.6);
+  // R2: the white-hot core saturates at 1.8x (tone-aware: big halos stay coloured instead of burning to white)
+  vec3 col = uColor * (halo + rays) * uIntensity + uCore * core * min(1.0 + uIntensity * 0.6, 1.8);
   gl_FragColor = vec4(col, 1.0);
 }`;
 let _quad = null;
@@ -300,6 +301,9 @@ export class GlowPool {
     this.vel = new Float32Array(max * 3); this.drag = new Float32Array(max); this.grav = new Float32Array(max);
     this.s0 = new Float32Array(max); this.s1 = new Float32Array(max); this.spin = new Float32Array(max); this.hdr = new Float32Array(max);
     this.top = 0; this.cursor = 0; this.scale = 1;
+    // R2 flash budget (P1-5): sprites bigger than bigAt metres are capped (intensity <= bigI, white core <= bigCore) and
+    // scaled by `flash` (1, or < 1 with settings.reduceFlashes) so stacked additive flashes can't blow out the frame.
+    this.flash = 1; this.bigAt = 2.5; this.bigI = 1.5; this.bigCore = 0.3;
   }
   /** color may be a THREE.Color / hex; intensity multiplies (HDR); core = white-hot centre amount. */
   spawn(shape, x, y, z, vx, vy, vz, life, size, size1, color, intensity = 1, core = 0.6, drag = 3, grav = 0, rot = 0, spin = 0, stretch = 1) {
@@ -307,6 +311,11 @@ export class GlowPool {
     for (let k = 0; k < this.max; k++) { const j = (this.cursor + k) % this.max; if (!this.alive[j]) { i = j; break; } }
     if (i < 0) return -1;
     this.cursor = (i + 1) % this.max;
+    if (size1 > this.bigAt) {
+      const f = this.flash;
+      intensity = Math.min(intensity, this.bigI) * f; core = Math.min(core, this.bigCore) * f;
+      if (f < 1) { size1 *= 0.6 + 0.4 * f; life *= 0.7 + 0.3 * f; }
+    }
     this.alive[i] = 1; this.t[i] = 0; this.life[i] = life;
     this.vel[3 * i] = vx; this.vel[3 * i + 1] = vy; this.vel[3 * i + 2] = vz;
     this.drag[i] = drag; this.grav[i] = grav; this.s0[i] = size; this.s1[i] = size1; this.spin[i] = spin;

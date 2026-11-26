@@ -1,7 +1,7 @@
 // BREAKLIGHT CV: draws the neon silhouette into a small standalone WebGL2 canvas (the DOM element used by the
 // calibration guide, the pour animation and the results replay). Its own tiny context: one texture upload per new cutout
 // plus one full-canvas draw. Falls back to a plain 2D-canvas look when WebGL2 isn't available.
-import { NEON_UNIFORMS, NEON_FUNCS, hexRGB } from './neon.js';
+import { NEON_UNIFORMS, NEON_FUNCS, HOLO_FUNCS, hexRGB } from './neon.js';
 
 const VS = `#version 300 es
 in vec2 aPos; out vec2 vUv;
@@ -11,9 +11,11 @@ precision highp float;
 in vec2 vUv; out vec4 outColor;
 ${NEON_UNIFORMS}
 ${NEON_FUNCS}
-void main() { outColor = neonShade(vUv); }`;
+${HOLO_FUNCS}
+uniform float uHolo;
+void main() { outColor = uHolo > 0.5 ? holoShade(vUv) : neonShade(vUv); }`;
 
-const NAMES = ['uTex', 'uGhost', 'uGhostAmt', 'uColA', 'uColB', 'uTime', 'uPulse', 'uIntensity', 'uMirror', 'uDetail', 'uFill', 'uPour', 'uLod', 'uDotGrid', 'uLines', 'uCrop'];
+const NAMES = ['uTex', 'uGhost', 'uGhostAmt', 'uColA', 'uColB', 'uTime', 'uPulse', 'uIntensity', 'uMirror', 'uDetail', 'uFill', 'uPour', 'uLod', 'uDotGrid', 'uLines', 'uCrop', 'uReveal', 'uSkel', 'uHolo'];
 
 export function createStylizer({ width = 640, height = 360 } = {}) {
   const canvas = document.createElement('canvas');
@@ -50,7 +52,8 @@ export function createStylizer({ width = 640, height = 360 } = {}) {
     canvas, gl: true,
     /**
      * frame: segmenter frame { image, w, h, version, kind }. u: { palette {a,b}, time, pulse, intensity, mirror, detail,
-     * fill, pour, crop [x,y,w,h], ghost frame|null, ghostAmt }.
+     * fill, pour, crop [x,y,w,h], ghost frame|null, ghostAmt, style 'holo' (default: the calibration hologram) | 'neon'
+     * (the r1 halftone look; also used whenever pour > 0), reveal 0..1 }.
      */
     render(frame, u) {
       if (gl.isContextLost()) return;
@@ -68,13 +71,14 @@ export function createStylizer({ width = 640, height = 360 } = {}) {
       gl.uniform3f(U.uColA, A[0], A[1], A[2]); gl.uniform3f(U.uColB, B[0], B[1], B[2]);
       gl.uniform1f(U.uTime, u.time || 0); gl.uniform1f(U.uPulse, u.pulse || 0); gl.uniform1f(U.uIntensity, u.intensity ?? 1);
       gl.uniform1f(U.uMirror, u.mirror === false ? 0 : 1); gl.uniform1f(U.uDetail, u.detail ?? 1); gl.uniform1f(U.uFill, u.fill ?? 0.85);
-      gl.uniform1f(U.uPour, u.pour || 0); gl.uniform1f(U.uGhostAmt, u.ghost ? u.ghostAmt || 0 : 0);
+      gl.uniform1f(U.uPour, u.pour || 0);
+      gl.uniform1f(U.uHolo, u.style === 'neon' || u.pour > 0 ? 0 : 1); gl.uniform1f(U.uReveal, u.reveal ?? 1); gl.uniform1f(U.uSkel, frame.kind === 'skeleton' ? 1 : 0); gl.uniform1f(U.uGhostAmt, u.ghost ? u.ghostAmt || 0 : 0);
       const crop = u.crop || [0, 0, 1, 1];
       gl.uniform4f(U.uCrop, crop[0], crop[1], crop[2], crop[3]);
       // glow radius ~ constant fraction of the person: base LOD from the source resolution
       gl.uniform1f(U.uLod, Math.max(0.5, Math.log2(Math.max(1, texW * crop[2]) / 120)));
       gl.uniform2f(U.uDotGrid, canvas.width / (u.dotPx || 5), canvas.height / (u.dotPx || 5));
-      gl.uniform1f(U.uLines, canvas.height / (u.linePx || 4));
+      gl.uniform1f(U.uLines, canvas.height / (u.linePx || (u.style === 'neon' ? 4 : 5)));
       gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },

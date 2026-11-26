@@ -241,7 +241,9 @@ export function createCursor(ctx, root) {
     }
     if (!st.active) { trackHand(dt, now); return; }
 
-    const hasHand = trackHand(dt, now);
+    // the demo / autoplay "players" are not people pointing at the screen: no hand reticle for them (mouse / keys only)
+    const synthTracker = /^(demo|autoplay)$/.test(ctx.game?.tracking?.kind || '');
+    const hasHand = trackHand(dt, now) && !synthTracker;
     if (st.engaged) lastEngagedT = now;
     const mouseRecent = now - mouse.t < 1500;
     const prevSource = st.source;
@@ -254,6 +256,9 @@ export function createCursor(ctx, root) {
     const W = innerWidth, H = innerHeight;
     if (st.source === 'mouse') { px = mouse.x; py = mouse.y; }
     else { px = (0.03 + st.raw.u * 0.94) * W; py = (0.04 + st.raw.v * 0.92) * H; }
+    // hand down (not engaged): park the dim reticle bottom-centre instead of wherever the lowered hand maps to (it used
+    // to sit on the title logo / in the replay's top letterbox)
+    if (st.source === 'hand' && !st.engaged) { px = W * 0.5; py = H - Math.min(W / 100, H * 0.016) * 4.2; }
 
     // magnetic snap (hand only: the mouse is already precise)
     let target = null;

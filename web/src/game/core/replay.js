@@ -41,7 +41,7 @@ export class ReplayRecorder {
   scan(events, songT, { windowS = 2.6, settle = 1.0 } = {}) {
     if (this._pinReq && songT >= this._pinReq.t1 + 0.1) {
       const c = this.snapshot(this._pinReq.t0, this._pinReq.t1);
-      if (c) { c.pinned = true; c.label = this._pinReq.label; c.pts = Infinity; this.pinned = c; }
+      if (c) { c.pinned = true; c.label = this._pinReq.label; c.pinT = this._pinReq.t; c.pts = Infinity; this.pinned = c; }
       this._pinReq = null;
     }
     if (songT - this._scanT < 1) return;
@@ -56,12 +56,12 @@ export class ReplayRecorder {
     }
   }
   /** Always keep [t - before, t + after] (e.g. the boss-kill blast); snapshotted once the frames exist. */
-  pin(t, { before = 1.6, after = 1.6, label = 'FINISHER' } = {}) { this._pinReq = { t0: t - before, t1: t + after, label }; }
+  pin(t, { before = 1.6, after = 1.6, label = 'FINISHER' } = {}) { this._pinReq = { t0: t - before, t1: t + after, t, label }; }
   /** Pin request still waiting for frames (the run ended early): snapshot what exists. */
   flushPin() {
     if (!this._pinReq) return;
     const r = this.range;
-    if (r) { const c = this.snapshot(this._pinReq.t0, Math.min(this._pinReq.t1, r.t1)); if (c) { c.pinned = true; c.label = this._pinReq.label; this.pinned = c; } }
+    if (r) { const c = this.snapshot(this._pinReq.t0, Math.min(this._pinReq.t1, r.t1)); if (c) { c.pinned = true; c.label = this._pinReq.label; c.pinT = this._pinReq.t; this.pinned = c; } }
     this._pinReq = null;
   }
 

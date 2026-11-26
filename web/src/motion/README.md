@@ -228,6 +228,78 @@ Monocular depth is 3-5x noisier than x/y (3-8 cm vs 1-2 cm). The detector now le
 - `DETECT` (exported tunables).
 - `LightPoseFilter({zMinCutoff, zBeta})`.
 - `runTriggerTest({Detector})`, `runRobustness()`, `BENCH_CONFIGS` (triggerTest.js), `runMoveBench`, `formatBench`.
+  (Round 2 below supersedes some of this: lean gate only while leaning out, 180 ms kick quiet, reach >= 0.68.)
+
+### Detection round 2 (BREAKLIGHT design QA r2: P1-1 dodge -> counter, P1-2 knee strikes)
+
+- **Punch after a dodge** (`actions.js`): the tilt gate only fires while the torso leans *out* (|tilt| growing faster
+  than `leanSpeed` 1.6 rad/s). Coming back toward upright gates only above `leanBackSpeed` (3.2 rad/s), which is a
+  violent snap. The punch's image-plane cues are measured relative to the moving torso: the baseline fist offset is
+  turned by the tilt change over the window.
+- **Punch after a duck or a jump**:
+  - Rising out of a duck (duck state on, or ended < `duckRiseMs` 450 ms ago) is neither a jump take-off nor a gate.
+    While rising, the aim test keeps only its forward part, because the pitching torso carries the fist up in the image.
+  - The fist's upper height bound includes the standing head height.
+  - A landing (400 ms to `landMs` 1100 ms after a jump fired) does not trip the falling-body gate.
+  - The post-kick quiet window is 180 ms (it was 280 ms).
+- **Dense punching**:
+  - The running noise estimate behind the z-scores skips motion instead of winsorising it. A frame updates it only if
+    every cue changed by less than 3 sd (`noiseGate` 9), |score| < `noiseScore` 4, and that arm has not punched in the
+    last 400 ms. Before, eighth-note runs and brute combos ratcheted the estimate up until real punches missed `punchZ`.
+  - The both-arms check uses the other arm's evidence over the last `punchBothMs` (100 ms), not only the same frame, at a
+    physical ratio of 35 %.
+- **High guard**: a fist that starts more than `punchHigh` (8 cm) above the shoulder may drop to shoulder height on the
+  way out without counting as "not aimed". It must drop at least `punchHighDrop` (4 cm). This kills the guard-hold
+  phantom: depth noise swinging the lifted extension of a held fist that does not move in the image.
+- **Reach**: the fist must reach `punchReach` 0.68 arm lengths in front of the shoulder (it was 0.4). The first frame may
+  be at `punchReachEarly` 0.6: the punch then waits one frame for confirmation at 0.68 and keeps the first frame's
+  timestamp, so judged timing does not move.
+- **Knee strike** (`det.kneeStrike = true`) fires `kickLeft` / `kickRight` with `info.knee = true` on a fast knee raise,
+  with no foot extension needed. It needs all of these:
+  - thigh elevation `1 - (hip.y - knee.y) / thigh` > `kneeElev` 0.4 (about 53 deg; 1 = horizontal, using the thigh length
+    calibrated during the T-pose);
+  - the knee > `kneeRise` 0.3 torso above the other knee;
+  - the knee rose faster than `kneeSpeed` 0.8 m/s within the last 250 ms (a short occlusion at the top still counts);
+  - the support foot on the floor.
+
+  It fires once per raise: it re-arms when the knee and foot are back down. Front kicks keep firing in this mode. Every
+  kick event now carries `knee` (true when the knee rule held at fire time). Seated mode has no knees. Knee raises gate
+  punches like kicks do.
+- **Sequence bench** (`moveBench.js` `SEQ_MOVES`, `runSequences()` / `runKneeBench()` in triggerTest.js,
+  `lab.sequenceBench()` / `lab.kneeBench()`). The combos are written at or tighter than the charts and boss at 128 bpm:
+  - `dodgeCounter`: a lean (or step), with the counter punch anywhere from the end of the lean-in to just after the return;
+  - `duckJab`: rise and jab within 0-0.45 s, then a second jab 1 beat later;
+  - `jumpKick`: a kick 0.05-0.65 s after touch-down, and sometimes a second one 2 beats later;
+  - `jumpPunch`: 2 punches after landing;
+  - `guardPunch3`: a block, then 3 punches 0.23-0.47 s apart from the high guard;
+  - `punchAlt8`: 6 alternating punches on 234 ms eighths;
+  - `kickPunch`: the punch 2 beats after the kick.
+
+  Punches are layered on the moving body, so they move with the shoulder and are thrown relative to the leaning torso.
+  Each part is scored separately: impulses within 450 ms, held parts by state. Phantoms are counted per part. The kneeStrike
+  bench runs every move plus `kneeLeft` / `kneeRight` (thigh 60-100 deg, shin hanging or folded, 50 % with both hands
+  pulling down) and the jump / kick sequences with knees, in the mild, mid and harsh configs.
+  `node web/src/motion/triggerTest.js` runs all four suites and exits 1 if any fails.
+
+| r1 detector -> r2 (3 seeds x 24 reps) | mild | mid | harsh | upper | seated |
+|---|---|---|---|---|---|
+| dodge -> counter punch | 90.3 -> 98.6 | 88.9 -> 98.6 | 79.2 -> 100 | 76.4 -> 100 | 76.4 -> 100 |
+| duck -> jabs | 80.6 -> 100 | 76.4 -> 100 | 73.6 -> 97.2 | 86.8 -> 99.3 | 86.8 -> 99.3 |
+| jump -> punches | 97.9 -> 100 | 97.9 -> 100 | 92.4 -> 99.3 | - | - |
+| guard -> 3 punches | 83.3 -> 99.1 | 80.6 -> 99.1 | 79.2 -> 97.2 | 78.2 -> 98.6 | 78.2 -> 98.6 |
+| eighth-note punches | 86.8 -> 98.8 | 83.8 -> 98.4 | 81.0 -> 97.7 | 73.6 -> 99.5 | 73.6 -> 99.5 |
+| kick -> punch | 90.3 -> 100 | 87.5 -> 100 | 79.2 -> 98.6 | - | - |
+| robustness phantoms / 100 moves | 0.19 -> 0.19 | 0.37 -> 0.19 | 0.93 -> 0.46 | 0.13 -> 0 | 0.13 -> 0 |
+
+Dodges, ducks, guards, jumps and kicks inside the sequences are all at 100 %. Sequence phantoms are 0.06-0.50 per 100
+parts. Single-move latency is unchanged: punch median delay 88 / 97 ms, decide 101 / 105 ms (was 103 / 106). The detector
+costs ~8 us per frame, and `motion.update` 0.25 ms (lab.measure, synthetic).
+
+**API additions** (all additive): `ActionDetector.kneeStrike`; kick event `info.knee`; `DETECT.{noiseGate, noiseScore,
+punchBothMs, punchHigh, punchHighDrop, punchAim, punchReach, punchReachEarly, leanBackSpeed, duckRiseMs, landMs, kneeElev,
+kneeRise, kneeSpeed}`; `debug` cond also has `reach / ext / wy`, `_dbgKnee`. Bench: `SEQ_MOVES`, `SEQ_UPPER`,
+`runMoveBench({kneeStrike, detectorOpts})`, `runSequences`, `runKneeBench`, `KNEE_CONFIGS`, `lab.sequenceBench()`,
+`lab.kneeBench()`. Changed defaults: `kickQuietMs` 280 -> 180, `punchBothRatio` 0.45 -> 0.35, `punchReach` 0.4 -> 0.68.
 
 ## Stages
 

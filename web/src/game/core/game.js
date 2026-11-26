@@ -10,15 +10,15 @@
 // gameplay (actions, held states, ChargeDetector). The accumulated lag is then rounded up to whole bars so the rest
 // stays on the music's downbeats. The judge reads the lag as judge.beatOffset.
 import * as THREE from 'three';
-import { ACTS, ActChart, awakeningNotes, AWAKEN, AWAKEN_PROMPT, AWAKEN_HINT } from './chart.js';
+import { ACTS, ActChart, awakeningNotes, AWAKEN, AWAKEN_PROMPT, AWAKEN_HINT, BREATHER_BEATS } from './chart.js';
 import { SpiritField } from './spirits.js';
 import { Judge } from './judge.js';
 import { Score } from './score.js';
 import { BossScript, BOSS_BEATS } from './boss.js';
 import { ChargeDetector } from './charge.js';
 import { ReplayRecorder, ReplayPlayer } from './replay.js';
-import { flags, submitBest, bestFor, heartsFor, audioVolume, upperOnlyOf } from './settings.js';
-import { spaceCheck, skipButton, letterbox, mirrorInset } from './space.js';
+import { flags, submitBest, bestFor, todayBest, resetPlayerBest, heartsFor, audioVolume, upperOnlyOf } from './settings.js';
+import { spaceCheck, skipButton, letterbox, mirrorInset, flashNotice, vignette, newPlayerButton } from './space.js';
 import * as cameraMod from './camera.js';
 
 const PLAY = new Set(['run', 'boss']);
@@ -42,6 +42,26 @@ const SLOW = new Set(['jump', 'squat', 'guard', 'blast']);
 const HAZARD = new Set(['jump', 'squat', 'dodge']);
 /** Replay: seconds of game time in the results highlight, and its playback speed. */
 const REPLAY_WIN = 2.6, REPLAY_SPEED = 0.35;
+/**
+ * Awakening wait escalation (QA r2 P0-1): a waiting spirit coaches after COACH_S, accepts a looser version of the move
+ * after LOOSE_S (any punch / any kick or knee-up / a partial squat / any lean or step / any guard / hands up for the
+ * core) and resolves itself as Good ("Let's keep going!") after AUTO_S, so the intro can never soft-lock.
+ */
+const COACH_S = 5, LOOSE_S = 10, AUTO_S = 15;
+const LOOSE_HINT = {
+  punch: 'Any punch will do: either hand!', kick: 'Any kick or knee raise will do!', squat: 'Just bend your knees a little!',
+  dodge: 'Lean or step to either side!', guard: 'Raise your hands!', jump: 'A little hop is enough!', blast: 'Hands up: we will do the rest!',
+};
+/** Bloom bumps (added to the preset's base intensity): kept low so blasts and the kill never white out (QA r2 art
+ *  P1-5). Cinematic shots clamp the total further; reduceFlashes caps everything at FLASH_CAP_REDUCED. */
+const BLOOM = { perfect: 0.12, blast: 0.2, kill: 0.28 };
+const FLASH_CAP = 0.3, FLASH_CAP_CINE = 0.18, FLASH_CAP_REDUCED = 0.08;
+const CINE_SHOTS = new Set(['blast', 'bossKill', 'replayKill']);
+/** Fallback echo placements per game state (used only when the CV mirror has no setEchoPreset): never over the
+ *  Warden (boss) or the rift (run), whole figure in frame. */
+const ECHO_PLACE = { run: { pos: [-26, 12, 78], h: 26 }, boss: { pos: [-44, 16, 70], h: 24 } };
+/** Kiosk: results idle -> next player; title idle with nobody tracked -> fresh state for the next player. */
+const KIOSK_RESULTS_IDLE_S = 40, KIOSK_TITLE_IDLE_S = 45;
 
 export class Game {
   constructor(ctx, { clock, tracking, director, debug = null }) {
@@ -85,10 +105,15 @@ export class Game {
     this.seed = settings.dev.seed ?? ((Math.random() * 1e6) | 0);
     this._offs = [];
     this._offs.push(bus.on('overdrive', ({ on }) => this._onOverdrive(on)));
+    this._offs.push(bus.on('knockdown', (d) => this._onKnockdown(d)));
+    this._knee = { left: { armed: true, last: -1e9, up: false }, right: { armed: true, last: -1e9, up: false }, f: null };
+    this.awkLog = [];                 // Awakening waits this run: { section, move, secs, how } (debug / playtest logging)
     // the UI's title / settings screens write settings.mode / seated / difficulty and announce it
     this._offs.push(bus.on('tutorial', (d) => { this._tutDrill = d?.phase === 'done' ? null : d?.drill ?? null; }));
     this._offs.push(bus.on('settings:change', ({ key, value } = {}) => {
       if (key === 'mode' || key === 'difficulty') this._applyMode();
+      if (key === 'reduceFlashes') this.applyFlashSetting();
+      if (key === 'kneeStrikes' && this.motion && 'kneeStrike' in this.motion.actions) this.motion.actions.kneeStrike = !!value;
       if (key === 'seated') {
         if (this.motion) this.motion.actions.seated = !!value;
         // the seated calibration (upper-body silhouette, seated height) only applies after re-calibrating
@@ -117,6 +142,7 @@ export class Game {
     this._actOff?.();
     this.motion = motion;
     motion.actions.seated = !!this.ctx.settings.seated; // seated duck rules (head drop vs seated height), no jumps/kicks
+    if ('kneeStrike' in motion.actions) motion.actions.kneeStrike = !!this.ctx.settings.kneeStrikes;   // detector knee raises -> kick events
     this._actOff = motion.actions.on((name, info) => this._onAction(name, info));
   }
   setHero(hero) {
@@ -168,10 +194,12 @@ export class Game {
 
   _exit(s, next) {
     const { ui } = this.ctx;
-    if (s === 'results') { this.replay.stop(); this._replayDone(); this._resIntro = null; this.ctx.booth?.disarm?.(); this._mirror('setMode', 'off'); }
+    if (s === 'results') { this.replay.stop(); this._replayDone(); this._resIntro = null; this._boothArmed = false; this.ctx.booth?.disarm?.(); this._mirror('setMode', 'off'); }
+    if (s === 'title') { this._npBtn?.close(); this._npBtn = null; }
     if (s === 'space') { this._space?.close(); this._space = null; }
     if (s === 'calibrate') setTimeout(() => { if (this.ctx.mirror?.mode === 'calibrate' && this.state !== 'calibrate') this._mirror('setMode', 'off'); }, 1600);
     if (PLAY.has(s) && next !== 'pause') {
+      this._breather = null; this._graceUntil = 0;
       this._stopHum(); this.charge.reset(); ui.hud.prompt(null); this._prompt = null; this._promptKey = null; this._promptWait = false;
       this._endAwaken(false);
       if (this._dist) { this._dist = null; ui.hud.distance(null); }
@@ -214,15 +242,26 @@ export class Game {
         V.vfx.aura(false, {});
         this.field.clear();
         V.boss.hide?.();
-        ui.screens.title({
+        this._placeEcho('title');
+        this._titleHandle = ui.screens.title({
           onPlay: () => { audio.unlock(); this.play(); },
           onTutorial: () => { audio.unlock(); this.setState('tutorial'); },
           onSettings: () => this.setState('settings'),
+          onNewPlayer: () => this.newPlayer(),
           mode: settings.mode,
           onMode: (m) => { settings.mode = m === 'challenge' ? 'challenge' : 'showcase'; settings.save?.(); this._applyMode(); },
           best: bestFor(settings),
+          todayBest: todayBest(settings),
+          kiosk: !!settings.kiosk,
+          length: settings.length,
           tutorialLabel: flags.get('awakened') ? 'TRAINING' : 'TUTORIAL',
         });
+        // NEW PLAYER (shared machine): the UI's title draws it when it knows onNewPlayer; else CORE's stand-in button
+        try {
+          const root = ui.root ?? document.body;
+          if (!root.querySelector('[data-ui-button*="new" i], [data-ui-button*="player" i]')) this._npBtn = newPlayerButton(root, () => this.newPlayer());
+        } catch { /* */ }
+        this._idleT = 0;
         break;
       case 'settings':
         ui.screens.settings({
@@ -303,6 +342,7 @@ export class Game {
 
   _startRun(act, { awaken = false } = {}) {
     const { audio } = this.ctx;
+    this._fresh = false; this.awkLog = [];
     this._resetRun();
     this.director.setMode('gameplay');
     let start = this.clock.nextBar(2);
@@ -321,10 +361,12 @@ export class Game {
     audio.setIntensity(0.25);
     const { notes, endBeat } = awakeningNotes(startBeat + 4, settings);
     for (const n of notes) this.field.add(n);
-    this.awk = { startBeat, endBeat, offset: 0, waiting: null, waitSince: 0, sections: new Set(), lastNote: notes[notes.length - 1] };
+    this.awk = { startBeat, endBeat, offset: 0, waiting: null, waitSince: 0, sections: new Set(), lastNote: notes[notes.length - 1], doneAt: null, assisted: [] };
     this.judge.beatOffset = 0;
     this._bannerAt = startBeat; this._bannerText = [AWAKEN.name, AWAKEN.sub];
-    try { this._skipBtn = skipButton(ui.root ?? document.body, () => this.skipAwaken()); } catch { /* */ }
+    // SKIP INTRO: the UI shows its hand-cursor button from bus 'awaken' {phase:'start'} (right edge, long dwell, hand
+    // target once a spirit waits); the stand-in UI gets CORE's (2 s dwell, never by a punch, right edge, upper third)
+    if (ui.stub) { try { this._skipBtn = skipButton(ui.root ?? document.body, () => this.skipAwaken()); } catch { /* */ } }
     bus.emit('act', { act: 'awaken' });
     bus.emit('awaken', { phase: 'start' });
   }
@@ -339,6 +381,8 @@ export class Game {
 
   _endAwaken(completed) {
     if (!this.awk) return;
+    const A = this.awk;
+    if (A.waiting && !A.waiting.resolved) this._logWait(A.waiting, 'quit');
     this.awk = null;
     this.judge.beatOffset = 0;
     this._skipBtn?.close(); this._skipBtn = null;
@@ -360,6 +404,8 @@ export class Game {
     const A = this.awk;
     const { audio, ui } = this.ctx;
     if (A.waiting && A.waiting.resolved) {               // released: round the lag up to whole bars (back on the downbeat)
+      this._logWait(A.waiting, A.waiting.assisted ? 'assist' : A.looseFor === A.waiting ? 'loose' : 'hit');
+      this.ctx.bus.emit('awaken', { phase: 'resolved', move: A.waiting.move, note: A.waiting });
       const rem = A.offset % 4;                         // answered at tempo (tiny lag): snap back instead of losing a bar
       A.offset = rem < 0.75 ? A.offset - rem : Math.ceil(A.offset / 4 - 1e-6) * 4;
       A.waiting = null;
@@ -382,17 +428,103 @@ export class Game {
       else if (W.move === 'dodge' && (W.side === 'left' ? st.leanRight || st.stepRight : st.leanLeft || st.stepLeft)) this.field.resolve(W, 'perfect', 0, 'hit');
       else if (W.move === 'guard' && W.phase === 'fly' && st.guard) { W.phase = 'punch'; W.blockKind = 'perfect'; W.blockErr = 0; this._onBlock(W, 'perfect', 0); }
     }
+    if (W && !W.resolved) this._escalateWait(W, A, st ?? {});
     // section hints (once per section, when its first spirit appears)
     for (const n of this.field.live) {
       if (n.section && !A.sections.has(n.section)) { A.sections.add(n.section); this.ctx.bus.emit('awaken', { phase: 'section', section: n.section, hint: AWAKEN_HINT[n.section] }); }
     }
-    // done: every note resolved and past the end
-    if (!A.waiting && A.lastNote.resolved && vb > Math.max(A.lastNote.beat + 2, A.endBeat - 4)) {
-      this._endAwaken(true);
-      this._startAct(0, this.clock.nextBar(2));
-      return beat;
+    // done: the finale core is resolved -> Act 1 on the next bar line, its banner right away over the blast's tail
+    // (no dead air: QA r2 art P2-7)
+    if (!A.waiting && A.lastNote.resolved) {
+      A.doneAt ??= beat;
+      if (beat > A.doneAt + 1.5) {
+        this._endAwaken(true);
+        this._startAct(0, this.clock.nextBar(1));
+        this._bannerAt = beat;
+        return beat;
+      }
     }
     return vb;
+  }
+
+  /** Coach (5 s) -> accept a looser move (10 s) -> resolve as Good and move on (15 s). */
+  _escalateWait(W, A, st) {
+    const { bus } = this.ctx;
+    const el = (performance.now() - A.waitSince) / 1000;
+    if (el >= COACH_S) {
+      const hint = this._coachHint(W, st);
+      if (A.coachFor !== W) { A.coachFor = W; bus.emit('awaken', { phase: 'coach', move: W.move, type: W.type, side: W.side, section: W.section, hint, note: W }); }
+      A.coach = hint;
+    }
+    if (el >= LOOSE_S) {
+      if (A.looseFor !== W) { A.looseFor = W; bus.emit('awaken', { phase: 'loose', move: W.move, type: W.type, section: W.section, hint: LOOSE_HINT[W.move], text: LOOSE_HINT[W.move], note: W }); }
+      this._looseCheck(W, st);
+    }
+    if (!W.resolved && el >= AUTO_S) this._assistWait(W);
+  }
+
+  /** Move-specific coaching from the detector's live state (prompt sub-line + bus 'awaken' {phase:'coach'}). */
+  _coachHint(W, st) {
+    const S = this.ctx.settings, f = this.tracking.lastFrame, c = f?.conf ?? {};
+    const seen = (k) => f?.joints?.[k] && (c[k] == null || c[k] >= 0.4);
+    switch (W.move) {
+      case 'punch': return (this.awk?.wrongTries ?? 0) > 0 ? `Use your ${W.side === 'left' ? 'LEFT' : 'RIGHT'} hand: snap it at the screen`
+        : 'Snap your fist straight at the screen, then pull it back';
+      case 'kick':
+        if (!seen('leftAnkle') || !seen('rightAnkle')) return 'Step back so your feet are in view';
+        return S.kneeStrikes ? 'Drive your knee up to hip height' : 'Lift your knee higher, then snap your foot forward';
+      case 'squat': return 'Drop fast: bend your knees, head down';
+      case 'dodge': return `Lean your whole upper body to the ${W.side === 'left' ? 'RIGHT' : 'LEFT'}, or step`;
+      case 'guard': return W.phase === 'punch' ? 'Now punch it: any hand, 3 times' : 'Both fists up beside your face';
+      case 'jump': return 'Both feet off the floor: a small hop is enough';
+      case 'blast': {
+        const hu = this.motion?.actions?.handsUpConfidence ?? 0;
+        if (this.charge.charged) return 'Now PUSH both hands forward, fast!';
+        if (this.charge.level > 0) return 'Keep them up… the aura is charging';
+        return hu < 0.35 ? 'Elbows above your shoulders, hands high' : 'Hold both hands up for a second';
+      }
+      default: return AWAKEN_HINT[W.section] ?? '';
+    }
+  }
+
+  /** After LOOSE_S: a looser version of the waiting move is enough (held states; impulses go through _onAction). */
+  _looseCheck(W, st) {
+    if (W.resolved) return;
+    const J = this._jump, f = this.tracking.lastFrame?.joints;
+    const hipY = f?.leftHip && f?.rightHip ? (f.leftHip.y + f.rightHip.y) * 0.5 : NaN;
+    const drop = Number.isFinite(J.base) && Number.isFinite(hipY) ? J.base - hipY : 0;
+    switch (W.move) {
+      case 'squat': if (st.squat || st.duck || drop > 0.06 * (this.heroH / 1.6)) this.field.resolve(W, 'good', 0, 'loose'); break;
+      case 'dodge': if (st.leanLeft || st.leanRight || st.stepLeft || st.stepRight) this.field.resolve(W, 'good', 0, 'loose'); break;
+      case 'jump': if (st.jump || drop < -0.04) this.field.resolve(W, 'good', 0, 'loose'); break;
+      case 'kick': if (st.kickLeft || st.kickRight || this._knee.left.up || this._knee.right.up) this.field.resolve(W, 'good', 0, 'loose'); break;
+      case 'guard':
+        if (W.phase === 'fly' && (st.guard || st.handsUp)) { W.phase = 'punch'; W.blockKind = 'good'; W.blockErr = 0; this._onBlock(W, 'good', 0); }
+        break;
+      case 'blast': if (st.handsUp || this.charge.level > 0.3 || this.charge.charged) this._assistBlast(); break;
+      default: break;
+    }
+  }
+
+  /** After AUTO_S: resolve the waiting spirit as Good and keep going (the core still gets its blast payoff). */
+  _assistWait(W) {
+    W.assisted = true;
+    this._flashPrompt("LET'S KEEP GOING!", 1400);
+    this.awk?.assisted.push(W.section);
+    this.ctx.bus.emit('awaken', { phase: 'auto', move: W.move, type: W.type, section: W.section, note: W, text: "LET'S KEEP GOING!" });
+    if (W.move === 'blast') { this._assistBlast(); if (W.resolved) return; }
+    this.field.resolve(W, 'good', 0, 'assist');
+  }
+  /** Fire the Breaklight for the player (the waiting core): the same blast path as a real push. */
+  _assistBlast() {
+    const k = this.heroH / 1.6;
+    this._onBlast(new THREE.Vector3(0, 1.3 * k, 0.35), new THREE.Vector3(0, 0, 1));
+  }
+  _logWait(W, how) {
+    const secs = this.awk?.waitSince ? (performance.now() - this.awk.waitSince) / 1000 : 0;
+    const e = { section: W.section, move: W.move, secs: +secs.toFixed(1), how };
+    this.awkLog.push(e);
+    if (this.ctx.settings.dev.debug || secs > COACH_S) console.info('[game] awakening wait', JSON.stringify(e));
   }
 
   _startAct(act, startBeat) {
@@ -403,6 +535,7 @@ export class Game {
     audio.setIntensity(0.35 + act * 0.3);
     const A = ACTS[act];
     this._bannerAt = startBeat; this._bannerText = [A.name, A.sub];
+    this._placeEcho('run');
     bus.emit('act', { act });
   }
 
@@ -412,6 +545,10 @@ export class Game {
     }
     if (this.awk) { this.fieldBeat = this._updateAwaken(beat); return; }
     this.fieldBeat = beat;
+    if (this._breather) {                               // calm before the boss: banner, groove, a hero close-up
+      if (beat >= this._breather.until) { this._breather = null; this.setState('boss'); }
+      return;
+    }
     const ch = this.chart;
     if (!ch) return;
     ch.update(beat, this.score.skill);
@@ -419,8 +556,19 @@ export class Game {
     const actOver = ch.done && beat > ch.lastBeat + 1.5 && !this.field.pending.length && !this.field.nextLive();
     if (actOver) {
       if (this.act < 2) this._startAct(this.act + 1, this.clock.nextBar(2));
-      else this.setState('boss');
+      else this._startBreather(beat);
     }
+  }
+
+  /** QA r2 P1-4 / P2-9: BREATHER_BEATS of calm before the boss (no notes), a banner and a front glamour cut. */
+  _startBreather(beat) {
+    const { ui, audio, bus } = this.ctx;
+    this._breather = { until: beat + BREATHER_BEATS };
+    this.chart = null;
+    audio.setIntensity(0.3);
+    try { ui.hud.banner('BREATHE', 'The Warden is waking…'); } catch { /* */ }
+    this.cameraCut('frontCut', Math.min(3, BREATHER_BEATS * this.clock.beatDur * 0.6), { variant: 1 });
+    bus.emit('breather', { beats: BREATHER_BEATS });
   }
 
   _drainNotes() {
@@ -442,6 +590,7 @@ export class Game {
     ui.hud.banner('WARNING', 'ECLIPSE WARDEN');
     this.director.setMode('boss');
     this.cameraCut('bossIntro');
+    this._placeEcho('boss');
     const S = this.ctx.settings;
     this.boss = new BossScript({
       view: visuals.boss, field: this.field, startBeat: start, upperBodyOnly: upperOnlyOf(S), seated: !!S.seated,
@@ -454,7 +603,7 @@ export class Game {
           else if (phase === 'missed') ui.hud.banner('IT CLOSED…', 'The Warden attacks again');
         },
         onDefeat: () => {
-          this.bloom(1.0, 1.8); audio.sfx('victory'); ui.hud.banner('WARDEN DEFEATED');
+          this.bloom(BLOOM.kill, 1.2); audio.sfx('victory'); ui.hud.banner('WARDEN DEFEATED');
           this.score.bossDefeated = true; this.score.addBonus(5000);
           this._bossKill = true;
           this.rec.pin(this.clock.frameNow, { before: 1.5, after: 1.4, label: 'WARDEN DEFEATED' });
@@ -497,8 +646,12 @@ export class Game {
     if (e.length >= 6) { const m = e.reduce((x, y) => x + y, 0) / e.length; stats.body.timingSdMs = Math.sqrt(e.reduce((x, y) => x + (y - m) ** 2, 0) / e.length); }
     const best = submitBest(settings, stats.score);
     stats.newBest = best.isNew; stats.best = best.best; stats.previousBest = best.previous; stats.prevBest = best.previous;
+    stats.todayBest = best.today; stats.newToday = best.newToday; stats.kiosk = !!settings.kiosk; stats.length = settings.length;
+    stats.awakening = this.awkLog.length ? this.awkLog.slice() : null;
+    this._resIdleT = 0;
     this.lastResults = stats;
     this.director.setMode('results');
+    this._placeEcho('results');
     this.replayWin = this.rec.pick(this.score.events, REPLAY_WIN);
     stats.replay = this.replayWin ? { seconds: +(this.replayWin.t1 - this.replayWin.t0).toFixed(2), hits: this.replayWin.hits, speed: REPLAY_SPEED, label: this.replayWin.label, bossKill: !!this.replayWin.pinned } : null;
     this._resIntro = { shown: false };
@@ -506,8 +659,8 @@ export class Game {
     // the real UI's results screen runs its own letterboxed replay phase from the bus events: show it first; the
     // stand-in UI gets CORE's fallback letterbox and the stats after the replay
     if (!ui.stub) this._showResultsScreen();
-    if (!this.replayWin || !this.hero || !this._playReplay({ intro: true })) this._showResultsScreen();
-    console.info('[game] results', JSON.stringify({ score: stats.score, rank: stats.rank, judgements: stats.judgements, maxCombo: stats.maxCombo, body: stats.body, newBest: stats.newBest, replay: stats.replay, knockdowns: stats.knockdowns }));
+    if (!this.replayWin || !this.hero || !this._playReplay({ intro: true })) { this._showResultsScreen(); this._armBooth(); }
+    console.info('[game] results', JSON.stringify({ score: stats.score, rank: stats.rank, judgements: stats.judgements, maxCombo: stats.maxCombo, body: stats.body, newBest: stats.newBest, replay: stats.replay, knockdowns: stats.knockdowns, playTime: Math.round(stats.playTime), awakening: stats.awakening, kiosk: stats.kiosk, length: stats.length }));
   }
 
   _showResultsScreen() {
@@ -519,12 +672,22 @@ export class Game {
       stats: this.lastResults,
       onReplay: this.replayWin ? () => this._playReplay() : undefined,
       onAgain: () => { audio.unlock(); this.setState('run', { act: 0 }); },
-      onTitle: () => this.setState('title'),
+      onTitle: () => (this.ctx.settings.kiosk ? this.newPlayer() : this.setState('title')),
       onSkipReplay: () => this.skipReplay(),
     });
-    // Photo Booth after a cleared run: strike a victory pose -> shareable card in the results panel
+  }
+
+  /**
+   * Photo Booth (QA r2 P1-5): armed only once the results replay is over (never over it), only after a cleared run,
+   * and only with a real camera (skipped for autoplay / the demo player: there is nobody to photograph).
+   */
+  _armBooth() {
+    if (this._boothArmed || this.state !== 'results' || this.replay.active) return;
     const booth = this.ctx.booth, h = this._resHandle;
-    if (booth && this.lastResults?.cleared && !this.ctx.settings.dev.autoplay) {
+    const T = this.tracking;
+    const realCam = !!T.camera?.active && (T.kind === 'hmr' || T.kind === 'mediapipe');
+    if (booth && h && this.lastResults?.cleared && !this.ctx.settings.dev.autoplay && realCam) {
+      this._boothArmed = true;
       try {
         h?.setPhotoCard?.({ pending: true });
         Promise.resolve(booth.arm({ timeoutMs: 15000 })).then((r) => {
@@ -557,9 +720,10 @@ export class Game {
     });
     if (!ok) return false;
     if (this.motion) this.motion.options.apply = false;
+    try { this.ctx.booth?.setBlocked?.(true); } catch { /* */ }          // a booth armed earlier never plays over a replay
     this.director.setMode('replay', { cut: true });
     // CORE owns the boss-kill replay framing (VISUAL's own call then only extends the same shot)
-    if (clip.pinned) this.cameraCut('bossKill', ReplayPlayer.duration(clip, REPLAY_SPEED) + 0.5);
+    if (clip.pinned) this.cameraCut('replayKill', ReplayPlayer.duration(clip, REPLAY_SPEED) + 0.5, { killAt: clip.pinT != null ? (clip.pinT - clip.t0) / Math.max(0.01, clip.t1 - clip.t0) : 0.52 });
     if (intro && !this._resIntro?.shown) this.ctx.ui.screens.hide();
     this._replayIntro = intro;
     this._lbox?.close(); this._lbox = null;
@@ -576,12 +740,14 @@ export class Game {
   }
   _replayDone() {
     if (this.motion) this.motion.options.apply = true;
+    if (this.director.shot === 'replayKill' || this.director.shot === 'bossKill') this.director.endShot();
+    try { if (this.ctx.booth?.blocked) this.ctx.booth.setBlocked(false); } catch { /* */ }
     if (this.state === 'results') this.director.setMode('results');
     const intro = this._replayIntro; this._replayIntro = false;
     this._lbox?.close(); this._lbox = null;
     this._inset?.close(); this._inset = null;
     this.ctx.bus.emit('replay', { phase: 'end', on: false, intro });
-    if (intro) this._showResultsScreen();
+    if (intro) { this._showResultsScreen(); this._armBooth(); }
   }
 
   // ======================================================================================== pause
@@ -636,8 +802,10 @@ export class Game {
     this.field.shift(shift);
     if (this.chart) { this.chart.startBeat += shift; this.chart.endBeat += shift; this.chart.cursor += shift; if (this.chart.last) this.chart.last = { ...this.chart.last, beat: this.chart.last.beat + shift }; }
     if (this.boss) { if (this.boss.shift) this.boss.shift(shift); else { this.boss.start += shift; this.boss.endBeat += shift; } }
-    if (this.awk) { this.awk.startBeat += shift; this.awk.endBeat += shift; }
+    if (this.awk) { this.awk.startBeat += shift; this.awk.endBeat += shift; if (this.awk.waiting) this.awk.waitSince = performance.now(); if (this.awk.doneAt != null) this.awk.doneAt += shift; }
     if (this._bannerAt != null) this._bannerAt += shift;
+    if (this._breather) this._breather.until += shift;
+    if (this._graceUntil) this._graceUntil += shift;
     this.field.paused = false;
     ui.screens.hide();
     const from = p.from;
@@ -647,18 +815,200 @@ export class Game {
     this.ctx.bus.emit('state', { from: 'pause', to: from });
   }
 
-  /** Brief bloom bump (blast, perfects, boss defeat); decays back to the preset's base intensity. */
+  /**
+   * Brief bloom bump (blast, perfects, boss defeat); decays back to the preset's base intensity. Capped (FLASH_CAP,
+   * FLASH_CAP_REDUCED with settings.reduceFlashes) and clamped harder while a blast / kill / replay shot is on screen,
+   * where the bloom threshold is also raised so the beam and the defeat never white the frame out.
+   */
   bloom(amount, dur = 0.35) {
     const b = this.ctx.post?.effects?.bloom;
     if (!b) return;
     this._bloomBase ??= b.intensity;
-    this._bloomAdd = Math.max(this._bloomAdd || 0, amount); this._bloomDur = dur;
+    const cap = this.ctx.settings.reduceFlashes ? FLASH_CAP_REDUCED : FLASH_CAP;
+    this._bloomAdd = Math.min(cap, Math.max(this._bloomAdd || 0, amount)); this._bloomDur = dur;
   }
   _updateBloom(dt) {
     const b = this.ctx.post?.effects?.bloom;
-    if (!b || !this._bloomAdd) return;
-    this._bloomAdd = Math.max(0, this._bloomAdd - dt * (this._bloomAdd / Math.max(0.05, this._bloomDur)) * 1.2 - dt * 0.05);
-    b.intensity = this._bloomBase + this._bloomAdd;
+    if (!b) return;
+    this._bloomBase ??= b.intensity;
+    const cine = CINE_SHOTS.has(this.director.shot);
+    const lm = b.luminanceMaterial;
+    if (lm && 'threshold' in lm) {
+      this._lumBase ??= lm.threshold;
+      const want = cine || this.ctx.settings.reduceFlashes ? Math.max(this._lumBase, 0.97) : this._lumBase;
+      if (Math.abs(lm.threshold - want) > 1e-3) lm.threshold += (want - lm.threshold) * Math.min(1, dt * 12);
+    }
+    if (this._bloomAdd) this._bloomAdd = Math.max(0, this._bloomAdd - dt * (this._bloomAdd / Math.max(0.05, this._bloomDur)) * 1.2 - dt * 0.05);
+    const cap = this.ctx.settings.reduceFlashes ? FLASH_CAP_REDUCED : cine ? FLASH_CAP_CINE : FLASH_CAP;
+    const want = this._bloomBase + Math.min(cap, this._bloomAdd || 0);
+    if (Math.abs(b.intensity - want) > 1e-4) b.intensity = want;
+    // exposure stays the pipeline's (nothing should pump it during cinematics)
+    const r = this.ctx.renderer;
+    this._expBase ??= r.toneMappingExposure;
+    if (cine && r.toneMappingExposure !== this._expBase) r.toneMappingExposure = this._expBase;
+  }
+
+  /** Photosensitivity: cap flashes everywhere (bloom here; fx impact flashes; VISUAL / CV read settings.reduceFlashes). */
+  setReduceFlashes(on) {
+    const S = this.ctx.settings;
+    S.reduceFlashes = !!on;
+    S.save?.();
+    this.applyFlashSetting();
+    this.ctx.bus.emit('settings:change', { key: 'reduceFlashes', value: S.reduceFlashes });
+  }
+  applyFlashSetting() {
+    const fx = this.ctx.fx, on = !!this.ctx.settings.reduceFlashes;
+    if (fx?.options) { fx.options.flash = !on; this._shake0 ??= fx.options.shakeScale ?? 1; fx.options.shakeScale = on ? Math.min(this._shake0, 0.6) : this._shake0; }
+    try { this.ctx.booth?.setReduceFlash?.(on); } catch { /* */ }
+  }
+  get kiosk() { return !!this.ctx.settings.kiosk; }
+
+  /**
+   * Photosensitivity / flash notice (first boot; every new player in kiosk mode): the UI's screens.flashNotice when it
+   * exists, else CORE's stand-in card. Resolves when dismissed (OK / auto-continue). Skipped for autoplay / ?notice=0.
+   */
+  flashNotice() {
+    const S = this.ctx.settings, ui = this.ctx.ui;
+    if (flags.get('flashNotice') || S.dev.notice === '0' || S.dev.autoplay) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let close = () => {};
+      const done = (r = {}) => {
+        if (done.d) return; done.d = true;
+        flags.set('flashNotice');
+        if (r && typeof r.reduceFlashes === 'boolean' && r.reduceFlashes !== !!S.reduceFlashes) this.setReduceFlashes(r.reduceFlashes);
+        try { close(); } catch { /* */ }
+        this.ctx.bus.emit('notice', { phase: 'done', reduceFlashes: !!S.reduceFlashes });
+        resolve(true);
+      };
+      // UI: screens.flashNotice({ onDone({ reduceFlashes }), onReduce(on), reduce }) (its toggle writes the setting and
+      // emits settings:change); CORE's stand-in takes onToggle / reduceFlashes / autoContinueS
+      const o = { reduce: !!S.reduceFlashes, reduceFlashes: !!S.reduceFlashes, onReduce: () => this.applyFlashSetting(), onToggle: (v) => this.setReduceFlashes(v), onDone: done, autoContinueS: 12 };
+      try {
+        if (typeof ui.screens.flashNotice === 'function' && !ui.stub) ui.screens.flashNotice(o);
+        else { const h = flashNotice(ui.root ?? document.body, o); close = h.close; }
+      } catch (e) { console.warn('[game] flash notice', e); done(); }
+      this.ctx.bus.emit('notice', { phase: 'show' });
+    });
+  }
+
+  /**
+   * NEW PLAYER (shared machine, QA r2 P0-2): Showcase, standing, full body, the Awakening + clear-space check + flash
+   * notice on again, this player's session best cleared; then the flash notice (kiosk) and a fresh calibration.
+   */
+  async newPlayer({ recalibrate = true } = {}) {
+    const S = this.ctx.settings, { bus } = this.ctx;
+    if (PLAY.has(this.state) || this.state === 'pause') return;
+    S.mode = 'showcase'; S.seated = false; S.upperBodyOnly = false;
+    S.save?.();
+    flags.resetPlayer(); resetPlayerBest();
+    if (this.motion) this.motion.actions.seated = false;
+    this.lastResults = null; this.replayCount = 0; this.awkLog = [];
+    this._applyMode();
+    this._fresh = true;
+    bus.emit('newPlayer', { kiosk: !!S.kiosk });
+    bus.emit('settings:change', { key: 'mode', value: 'showcase', newPlayer: true });
+    if (!recalibrate) { if (this.state === 'title') this.setState('title'); return; }
+    if (this.state !== 'title') this.setState('title');
+    await this.flashNotice();                         // the notice is per player too
+    if (this.state === 'title') this.setState('calibrate');
+  }
+
+  /** Echo placement per game state: CV's preset when it has one, else ECHO_PLACE (never over the Warden / rift). */
+  _placeEcho(kind) {
+    const m = this.ctx.mirror;
+    if (!m) return;
+    if (typeof m.setEchoPreset === 'function') { this._mirror('setEchoPreset', kind); return; }
+    const e = m.echo, P = ECHO_PLACE[kind];
+    if (!e?.setPlacement || !P) return;
+    try { e.setPlacement({ position: new THREE.Vector3(...P.pos), height: P.h }); } catch { /* */ }
+  }
+
+  /**
+   * Showcase knockdown (QA r2 P1-7): a slow-mo beat on the hero, a stagger + hurt face, the music ducked for a bar,
+   * a red vignette (UI) and "GET BACK UP!", then one bar in which hazards cannot hurt.
+   */
+  _onKnockdown({ count } = {}) {
+    if (!PLAY.has(this.state)) return;
+    const { audio, ui, bus, fx } = this.ctx;
+    const beat = this.clock.frameBeat;
+    this._graceUntil = beat + 4;
+    try { this.motion?.hitStop?.(420, 0.22); } catch { /* */ }
+    try { this.motion?.accents?.trigger?.('land', this.motion._t ?? 0, { strength: 1.4 }); } catch { /* */ }
+    this.motion?.requestExpression?.('hurt');
+    if (fx) fx.trauma = Math.min(1, (fx.trauma || 0) + 0.8);
+    audio.sfx('hurt', { pitch: 0.7, gain: 1.2 });
+    audio.setIntensity(0.12);
+    this._kdRestoreAt = beat + 4;
+    // the real UI listens to bus 'knockdown' itself (red vignette, "GET BACK UP!" in the top lane, heart refill); the
+    // stand-in UI gets CORE's vignette + banner + prompt
+    if (!ui.stub && typeof ui.hud.knockdown === 'function') { try { ui.hud.knockdown({ health: this.score.health, max: this.score.maxHealth, count }); } catch { /* */ } }
+    else {
+      try { vignette(ui.root ?? document.body, { color: '255,40,70', ms: 1600 }); } catch { /* */ }
+      try { ui.hud.banner('KNOCKED DOWN', 'Get back up!'); } catch { /* */ }
+      this._flashPrompt('GET BACK UP!', 1800);
+    }
+    bus.emit('knockdown:fx', { count, graceBeats: 4 });
+  }
+
+  /**
+   * Fastest punch (QA r2 P2-1): the hero-space wrist speed (m/s) at the punch, not the detector's arm-extension rate
+   * (that one is body.punchSnap). Hand positions are sampled every frame; 160 ms after a punch fires, the peak speed
+   * of that hand over the last ~0.35 s is the punch's speed.
+   */
+  _updateWrist() {
+    const B = this.hero?.bones, root = this.hero?.root;
+    if (!B?.leftHand || !B?.rightHand || !root) return;
+    const W = this._wrist ??= { buf: [], inv: new THREE.Matrix4(), l: new THREE.Vector3(), r: new THREE.Vector3() };
+    const now = performance.now();
+    W.inv.copy(root.matrixWorld).invert();
+    B.leftHand.getWorldPosition(W.l).applyMatrix4(W.inv); B.rightHand.getWorldPosition(W.r).applyMatrix4(W.inv);
+    W.buf.push({ t: now, l: W.l.clone(), r: W.r.clone() });
+    while (W.buf.length && now - W.buf[0].t > 400) W.buf.shift();
+    const q = this._wristReq;
+    if (q && now >= q.at) {
+      this._wristReq = null;
+      let best = 0;
+      // speed over ~66 ms spans (2 tracker frames), so one-frame pose snaps / IK pops do not count as fist speed
+      for (let i = 0, j = 0; j < W.buf.length; j++) {
+        const b = W.buf[j];
+        if (now - b.t > 350) { i = j + 1; continue; }
+        while (i < j && b.t - W.buf[i + 1].t >= 66) i++;
+        const a = W.buf[i], dt = (b.t - a.t) / 1000;
+        if (i >= j || dt < 0.06) continue;
+        best = Math.max(best, b[q.side[0]].distanceTo(a[q.side[0]]) / dt);
+      }
+      if (best > 0.5 && best < 15) this.score.punchSpeed(best);
+    }
+  }
+
+  /** Knee strikes (settings.kneeStrikes) + the loose Awakening match: a knee driven up to ~hip height. Fires
+   *  kickLeft / kickRight into _onAction (so crawlers accept it) unless the detector just fired that kick itself. */
+  _updateKnee() {
+    const K = this._knee, f = this.tracking.lastFrame, J = f?.joints;
+    if (!J || f === K.f) return;
+    K.f = f;
+    if (this.ctx.settings.seated) { K.left.up = K.right.up = false; return; }
+    const c = f.conf ?? {};
+    const ok = (k) => J[k] && (c[k] == null || c[k] >= 0.4);
+    if (!ok('leftHip') || !ok('rightHip') || !ok('leftShoulder') || !ok('rightShoulder')) return;
+    const hipY = (J.leftHip.y + J.rightHip.y) * 0.5, torso = Math.max(0.25, (J.leftShoulder.y + J.rightShoulder.y) * 0.5 - hipY);
+    const sunk = Number.isFinite(this._jump.base) && this._jump.base - hipY > 0.12;      // squatting: knees rise with the hips down
+    const rel = {};
+    for (const side of ['left', 'right']) rel[side] = ok(side + 'Knee') ? (J[side + 'Knee'].y - hipY) / torso : -1;
+    const now = performance.now(), lf = this.motion?.actions?.lastFire ?? {};
+    for (const side of ['left', 'right']) {
+      const S = K[side], other = side === 'left' ? 'right' : 'left';
+      const solo = rel[other] < -0.6 && !sunk;                                           // the support leg stays down
+      S.up = solo && rel[side] > -0.55;
+      if (rel[side] < -0.65) S.armed = true;
+      if (solo && rel[side] > -0.35 && S.armed && now - S.last > 400) {
+        S.armed = false; S.last = now;
+        const name = side === 'left' ? 'kickLeft' : 'kickRight';
+        // the detector fires knee strikes itself when it supports them (actions.kneeStrike); else CORE's fallback does
+        const det = this.motion && 'kneeStrike' in this.motion.actions;
+        if (!det && this.ctx.settings.kneeStrikes && PLAY.has(this.state) && now - (lf[name] ?? -1e9) > 400) this._onAction(name, { tCapture: f.tCapture ?? now, side, knee: true });
+      }
+    }
   }
 
   // ======================================================================================== per frame
@@ -686,6 +1036,9 @@ export class Game {
       this.field.update(fT, fb, dt);
       this.charge.update(dt, this.motion, this.heroH);
       this._updateJump();
+      this._updateKnee();
+      this._updateWrist();
+      if (this._kdRestoreAt && beat >= this._kdRestoreAt) { this._kdRestoreAt = 0; audio.setIntensity(this.act === 'boss' ? 1 : this.awk ? 0.3 : 0.35 + (+this.act || 0) * 0.3); }
       this._updatePrompt(fb);
       this._updateDistance(dt);
       this.rec.record(songT, fb);
@@ -695,6 +1048,16 @@ export class Game {
       this._updatePause(dt);
     } else if (this.state === 'results') {
       if (this._replayAt && performance.now() > this._replayAt) this._playReplay();
+      // kiosk: nobody touched the results -> the next player (booth countdowns finish first)
+      if (settings.kiosk && !this.replay.active && this._resIntro?.shown && !this.ctx.booth?.busy) {
+        if ((this._resIdleT = (this._resIdleT || 0) + dt) > KIOSK_RESULTS_IDLE_S) { this._resIdleT = 0; this.newPlayer(); }
+      }
+    } else if (this.state === 'title') {
+      // kiosk: an empty title (nobody tracked) for a while -> reset for whoever walks up next
+      if (settings.kiosk && !this._fresh) {
+        this._idleT = this.tracking.lostFor > 3 ? (this._idleT || 0) + dt : 0;
+        if (this._idleT > KIOSK_TITLE_IDLE_S) { this._idleT = 0; this.newPlayer(); }
+      }
     } else if (this.state === 'tutorial') {
       this.charge.update(dt, this.motion, this.heroH);
     }
@@ -739,20 +1102,25 @@ export class Game {
     if (!PLAY.has(s)) return;
     const sc = this.score;
     // body stats (all moves, judged or not)
-    if (name.startsWith('punch')) { sc.move('punch'); sc.punchSpeed(info.speed); }
+    if (name.startsWith('punch')) { sc.move('punch'); sc.punchSnap(info.speed); this._wristReq = { side: name.endsWith('Left') ? 'left' : 'right', at: performance.now() + 160 }; }
     else if (name.startsWith('kick')) sc.move('kick');
     else if (name === 'jump') { sc.move('jump'); this._startJump(); }
     else if (name === 'squat') sc.move('squat');
     else if (/^(lean|step)/.test(name)) sc.move('dodge');
     if (!/^(punch|kick|jump)/.test(name)) return;
     if (name.startsWith('punch') && this.charge.busy) return;     // the blast push reads as a jab: ignore
+    // knee strikes: the detector's own kick right after a knee event on that side is the same move
+    if (name.startsWith('kick') && !info?.knee && performance.now() - this._knee[name === 'kickLeft' ? 'left' : 'right'].last < 400 && this.ctx.settings.kneeStrikes) return;
     const field = this.field;
-    const W = this.awk?.waiting;
+    const A = this.awk, W = A?.waiting;
     if (W && !W.resolved && W.move !== 'guard') {
       if (Judge.actionFor(W) === name) { field.resolve(W, 'perfect', 0, 'hit'); return; }
-      if (W.move === 'punch' && name.startsWith('punch')) { this._flashPrompt(W.side === 'left' ? 'OTHER HAND: ◀ LEFT' : 'OTHER HAND: RIGHT ▶'); return; }
-      if (W.move === 'kick' && name.startsWith('kick')) { this._flashPrompt(W.side === 'left' ? 'OTHER LEG: ◀ LEFT' : 'OTHER LEG: RIGHT ▶'); return; }
+      const loose = A.looseFor === W;
+      if (loose && ((W.move === 'punch' && name.startsWith('punch')) || (W.move === 'kick' && name.startsWith('kick')))) { field.resolve(W, 'good', 0, 'loose'); return; }
+      if (W.move === 'punch' && name.startsWith('punch')) { A.wrongTries = (A.wrongTries || 0) + 1; this._flashPrompt(W.side === 'left' ? 'OTHER HAND: ◀ LEFT' : 'OTHER HAND: RIGHT ▶'); return; }
+      if (W.move === 'kick' && name.startsWith('kick')) { A.wrongTries = (A.wrongTries || 0) + 1; this._flashPrompt(W.side === 'left' ? 'OTHER LEG: ◀ LEFT' : 'OTHER LEG: RIGHT ▶'); return; }
     }
+    if (W && !W.resolved && W.move === 'guard' && W.phase === 'fly' && A.looseFor === W && name.startsWith('punch')) { W.phase = 'punch'; W.blockKind = 'good'; W.blockErr = 0; this._onBlock(W, 'good', 0); return; }
     if (name.startsWith('punch')) {
       const brute = field.brutePunchTarget();
       if (brute) {
@@ -798,7 +1166,8 @@ export class Game {
     // health economy: Showcase = only hazards that physically hit you (sweep / scythe / volley; the brute's strike is
     // handled in _onBlock); Challenge = every missed target; the Awakening never hurts
     const challenge = this.score.mode === 'challenge';
-    const hurt = kind === 'miss' && n.act !== 'awaken' && n.move !== 'blast' && !n.react && (challenge || hazard || n.move === 'guard');
+    const grace = this._graceUntil && this.clock.frameBeat < this._graceUntil;      // just got back up after a knockdown
+    const hurt = kind === 'miss' && !grace && n.act !== 'awaken' && n.move !== 'blast' && !n.react && (challenge || hazard || n.move === 'guard');
     const pan = n.side === 'left' ? -0.5 : n.side === 'right' ? 0.5 : 0;
     if (kind === 'miss') {
       audio.sfx('miss');
@@ -812,7 +1181,7 @@ export class Game {
       else if (n.move === 'blast') { /* blast sfx played by _onBlast */ }
       else { audio.sfx(n.move === 'kick' ? 'kickHit' : 'punchHit', { pan }); audio.sfx('shatter', { pan, gain: 0.7 }); }
       audio.sfx(kind, { pan: 0 });
-      if (kind === 'perfect') { this.director.punchIn(1); visuals.stage.pulse(0.7); this.bloom(0.25, 0.25); }
+      if (kind === 'perfect') { this.director.punchIn(1); visuals.stage.pulse(0.7); if (!this.ctx.settings.reduceFlashes) this.bloom(BLOOM.perfect, 0.25); }
       if (n.boss && n.move === 'punch') this.boss?.chip();
     }
     const bonus = n.move === 'blast' && kind !== 'miss' ? 700 : 0;
@@ -866,7 +1235,7 @@ export class Game {
     if (target) d.copy(target.pos ?? target.to).sub(o).normalize(); else d.copy(dir);
     try { visuals.vfx.blast(o.clone(), d, { target: target ? (target.pos ?? target.to)?.clone() : undefined }); } catch (e) { console.warn('[game] vfx.blast', e); }
     audio.sfx('blast');
-    this.bloom(0.55, 0.45);                   // a short flash: the beam itself carries the shot
+    this.bloom(BLOOM.blast, 0.45);            // a short, low flash: the beam itself carries the shot
     this._stopHum();
     if (visuals.stub && this.ctx.fx) this.ctx.fx.trauma = Math.min(1, (this.ctx.fx.trauma || 0) + 0.7);   // VISUAL shakes itself
     const killing = !!(target?.weak && this.boss && this.boss.blasts >= 2);
@@ -897,6 +1266,7 @@ export class Game {
 
   _onOverdrive(on) {
     const { audio, visuals, ui } = this.ctx;
+    if (on && PLAY.has(this.state)) this._placeEcho(this.state === 'boss' ? 'boss' : 'run');
     if (PLAY.has(this.state) || !on) this._mirror('setMode', on ? 'echo' : 'off');
     audio.setOverdrive(on);
     visuals.vfx.aura(on, { color: 0xffc840, strength: 0.8, mode: 'overdrive' });
@@ -933,20 +1303,24 @@ export class Game {
     else if (br) { text = 'PUNCH ×3!'; opts = { move: 'punch' }; }
     else if (this.charge.charged) { text = 'PUSH!'; opts = { move: 'blast' }; cue = 'blast'; cueT = 1; }
     else if (W && !W.resolved) {
-      const p = AWAKEN_PROMPT[W.type];
+      const knee = this.ctx.settings.kneeStrikes && W.type === 'crawler';
+      const p = knee ? { left: '◀ LEFT KNEE', right: 'RIGHT KNEE ▶' } : AWAKEN_PROMPT[W.type];
       text = typeof p === 'string' ? p : p?.[W.side] ?? null;
       if (W.type === 'core' && this.charge.level > 0) text = 'KEEP THEM UP…';
       if (W.type === 'brute' && W.phase === 'punch') text = 'PUNCH ×3!';
       const secs = [...new Set(AWAKEN.sections.filter((x) => !(x.lower && upperOnlyOf(this.ctx.settings)) && !(x.seated === false && this.ctx.settings.seated)).map((x) => x.id))];
       const i = secs.indexOf(W.section);
-      opts = { move: promptMove(W), wait: true, sub: AWAKEN_HINT[W.section], kicker: `AWAKENING · ${i + 1} / ${secs.length}` };
+      const stage = A.looseFor === W ? 'loose' : A.coachFor === W ? 'coach' : null;
+      const sub = stage === 'loose' ? LOOSE_HINT[W.move] : stage === 'coach' ? A.coach : (knee ? 'Knee the cyan crawlers: drive your knee up' : AWAKEN_HINT[W.section]);
+      opts = { move: promptMove(W), wait: true, sub, coach: stage, kicker: `AWAKENING · ${i + 1} / ${secs.length}` };
     } else {
       const r = this.field.reactTarget();
-      if (r) { text = r.side === 'left' ? 'LEFT PUNCH NOW!' : 'RIGHT PUNCH NOW!'; opts = { move: promptMove(r), tone: 'warn' }; }
+      if (r) { text = !this.ctx.settings.wrongMovePenalty ? 'PUNCH NOW!' : r.side === 'left' ? 'LEFT PUNCH NOW!' : 'RIGHT PUNCH NOW!'; opts = { move: promptMove(r), tone: 'warn' }; }
       else {
         const n = this.field.nextLive(this._promptable ??= (x) => (x.type !== 'striker' && x.type !== 'crawler') || (x.type === 'crawler' && (x.act === 0 || x.act === 'awaken')) || (x.waitFor && x.act === 'awaken'));
         if (n && n.beat - beat <= Math.max(SLOW.has(n.move) ? 2 : 1.5, n.teleBeats)) {
-          text = n.type === 'volley' ? (n.side === 'left' ? 'LEAN RIGHT ▶' : '◀ LEAN LEFT') : n.type === 'crawler' ? (n.side === 'left' ? 'LEFT KICK!' : 'RIGHT KICK!')
+          const kw = this.ctx.settings.kneeStrikes ? 'KNEE' : 'KICK';
+          text = n.type === 'volley' ? (n.side === 'left' ? 'LEAN RIGHT ▶' : '◀ LEAN LEFT') : n.type === 'crawler' ? (n.side === 'left' ? `LEFT ${kw}!` : `RIGHT ${kw}!`)
             : n.type === 'striker' ? (n.side === 'left' ? '◀ LEFT PUNCH' : 'RIGHT PUNCH ▶') : PROMPT[n.type] ?? null;
           opts = { move: promptMove(n) };
           if (n.act === 'awaken' && n.section) opts.sub = AWAKEN_HINT[n.section];
@@ -985,7 +1359,8 @@ export class Game {
     return {
       fps: this.ctx.perf.fps, frameMs: this.ctx.perf.frameMs, frameMax: this.ctx.perf.frameMax, quality: this.ctx.quality?.preset?.id,
       state: this.state, act: this.act, beat: this.clock.frameBeat, fieldBeat: this.fieldBeat, clockLive: this.clock.live,
-      mode: sc.mode, knockdowns: sc.knockdowns, awaken: this.awk ? { offset: this.awk.offset, waiting: this.awk.waiting?.type ?? null } : null,
+      mode: sc.mode, knockdowns: sc.knockdowns, awaken: this.awk ? { offset: this.awk.offset, waiting: this.awk.waiting?.type ?? null, coach: this.awk.coachFor === this.awk.waiting && !!this.awk.waiting, loose: this.awk.looseFor === this.awk.waiting && !!this.awk.waiting } : null,
+      breather: !!this._breather, grace: !!(this._graceUntil && this.clock.frameBeat < this._graceUntil), shot: this.director.shot, bloom: this.ctx.post?.effects?.bloom?.intensity,
       boss: this.boss ? { stage: this.boss.stage, blasts: this.boss.blasts, tries: this.boss.tries, phase: this.boss.phase } : null,
       tracker: this.tracking.kind, trackFps: this.tracking.fps, trackLat: this.tracking.lat, lostFor: Math.min(99, this.tracking.lostFor),
       live: this.field.live.length, pending: this.field.pending.length, draws: r.calls, tris: r.triangles,

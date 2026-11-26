@@ -33,6 +33,8 @@ uniform float uLod;
 uniform vec2 uDotGrid;
 uniform float uLines;
 uniform vec4 uCrop;      // source rect (x, y, w, h) in texture uv
+uniform float uReveal;   // holo: 0..1 rising reveal wipe (1 = fully shown)
+uniform float uSkel;     // holo: 1 when the source is the skeleton fallback (RGB carries bone core lines)
 `;
 
 export const NEON_FUNCS = `
@@ -82,6 +84,56 @@ vec4 neonShade(vec2 uv) {
     res += vec4(uColB * edge * 1.2, edge * 0.6) * uGhostAmt;
   }
   if (uPour > 0.0) res.rgb = mix(res.rgb, vec3(1.0, 0.93, 0.75) * res.a * 1.3, clamp(uPour * 0.9, 0.0, 0.75));
+  return res * uIntensity;
+}
+`;
+
+/**
+ * The calibration-hologram look (QA art r2 P1-2), shared by the 3D echo and the DOM silhouette: a crisp neon outline on
+ * the mask's iso-edge, a translucent act-coloured vertical gradient inside with a fresnel brightening near the edge, clean
+ * scanlines, a slow rising sweep and a soft outer glow. No halftone, no posterised camera image. Skeleton frames carry
+ * white bone "core lines" in RGB (skeleton.js), which become the thin inner lines of a capsule hologram.
+ */
+export const HOLO_FUNCS = `
+vec4 holoShade(vec2 uv) {
+  vec2 o = vec2(mix(uv.x, 1.0 - uv.x, uMirror), uv.y);
+  vec2 s = uCrop.xy + o * uCrop.zw;
+  float a0 = textureLod(uTex, s, max(0.0, uLod * 0.45 - 0.2)).a;   // lightly smoothed mask: clean edge, no stair-steps
+  vec3 rgb = textureLod(uTex, s, 0.0).rgb;
+  float g1 = textureLod(uTex, s, uLod).a;
+  float g2 = textureLod(uTex, s, uLod + 1.5).a;
+  float g3 = textureLod(uTex, s, uLod + 3.0).a;
+  float fw = clamp(fwidth(a0), 0.004, 0.5);
+  float m = smoothstep(0.5 - fw, 0.5 + fw, a0);
+  float line = 1.0 - smoothstep(fw * 1.2, fw * 2.6 + 0.04, abs(a0 - 0.5));
+  float inner = m * clamp(1.0 - g1 * 1.1, 0.0, 1.0);
+  float outer = (1.0 - m) * (g2 * 0.55 + g3 * 0.45);
+  vec3 grad = mix(uColA, uColB, smoothstep(0.05, 1.0, o.y));
+  float sl = fract(o.y * uLines - uTime * 0.35);
+  float scan = 0.55 + 0.45 * smoothstep(0.1, 0.3, sl) * (1.0 - smoothstep(0.5, 0.7, sl));
+  float rise = fract(uTime * 0.16) * 1.5 - 0.25;
+  float sweep = exp(-pow(((1.0 - o.y) - rise) * 12.0, 2.0));
+  float L = dot(rgb, vec3(0.299, 0.587, 0.114));
+  float det = mix(clamp((L - 0.45) * 0.6, -0.15, 0.25) * uDetail, smoothstep(0.72, 0.95, L), uSkel);
+  float fillA = m * (0.22 + 0.5 * inner) * scan;
+  vec3 col = grad * fillA * 1.7
+           + mix(grad, vec3(1.0), 0.35) * max(det, 0.0) * m * (0.6 + 0.6 * uSkel)
+           + mix(uColA, vec3(1.0), 0.4) * line * (1.55 + 0.3 * uPulse)
+           + uColA * sweep * m * 0.3
+           + mix(uColA, uColB, 0.4) * outer * (0.4 + 0.2 * uPulse);
+  float alpha = clamp(fillA * 0.85 + line * 0.85 + max(det, 0.0) * m * 0.3 + outer * 0.3, 0.0, 1.0);
+  vec4 res = vec4(col, alpha);
+  if (uGhostAmt > 0.0) {
+    float ga = textureLod(uGhost, s, uLod * 0.45).a;
+    float gl = (1.0 - smoothstep(0.03, 0.12, abs(ga - 0.5))) * (1.0 - m);
+    res += vec4(uColB * gl * 0.9, gl * 0.4) * uGhostAmt;
+  }
+  if (uReveal < 0.999) {
+    float rv = uReveal * 1.2 - 0.1, yb = 1.0 - o.y;
+    float vis = smoothstep(rv + 0.02, rv - 0.05, yb);
+    float edge = exp(-pow((yb - rv) * 28.0, 2.0)) * max(m, line);
+    res = res * vis + vec4(mix(uColA, vec3(1.0), 0.5) * edge * 1.6, edge * 0.5);
+  }
   return res * uIntensity;
 }
 `;

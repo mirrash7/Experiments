@@ -75,24 +75,37 @@ export const DETECT = {
   punchPrevZ: 2.5,         // previous frame's evidence needed to fire at once; else wait one frame for confirmation
   punchConfirmZ: 0.6,      // ... and the next frame must keep this fraction of punchZ (fires stamped with the first)
   punchBothFrac: 0.25, punchBothZ: 1.5,      // the other arm showing this much evidence too (and >= 25 % of this arm's)
-  punchBothRatio: 0.45,    // ... and >= 45 % of this arm's physical extension + foreshortening change: both arms move
+  punchBothRatio: 0.35,    // ... and >= 35 % of this arm's physical extension + foreshortening change: both arms move
+  punchBothMs: 100,        // ... on this frame or any of the other arm's frames this recent (an occluded arm: its last ones)
+  punchHigh: 0.08, punchHighDrop: 0.04,   // m: a fist starting this far above the shoulder must drop this much on the way out
+  punchAim: 0.8,           // the fist's depth gain must exceed this x its image-plane displacement over the window
   punchRiseK: 0.2, punchMaxRise: 0.08,    // m, image-plane fist rise/drop allowed over the window (+ 0.2 x the depth gain)
   punchCueZ: 2.5,          // a cue "votes" above this
   punchVote: 1.75,         // soft votes needed: ext <= 1, fore <= 1, depth <= 0.6 (~2 of 3, depth weak)
   punchMinExt: 0.18, punchMinFore: 0.08,   // physical floor of the change over the window (ext, foreshortening)
   punchExt: 0.66,          // the arm must already be this extended (1 = straight)
+  punchReach: 0.68,        // ... and the fist this far in front of the shoulder (x arm length; confirmation: - 0.05)
+  punchReachEarly: 0.6,    // ... or this far, then the next frame must confirm it at punchReach (stamped with the first)
+  noiseGate: 9,            // running punch-cue noise: a window change above noiseGate x variance (3 sd) is not noise
+  noiseScore: 4,           // ... nor a frame whose combined evidence |score| exceeds this
   noise2D: 0.012,          // m, assumed x/y keypoint noise after the light filter (depth fusion weights)
   noiseDepth: 0.035,       // m, assumed depth noise of a bone's raw dz after the light filter
   xyMinCutoff: 2.5, xyBeta: 3,     // image-plane one-euro of the action stream
   zMinCutoff: 1.5, zBeta: 0.5,   // depth one-euro (slower: monocular depth is the noisy axis)
   legUp: 0.26,             // a foot this far above the other (or knee 0.2): kick in progress, no punches
-  kickQuietMs: 280,        // ... and for this long after a kick fired / the foot came down
-  leanSpeed: 1.6,          // rad/s torso tilt speed: dodge transition, no punches
+  kickQuietMs: 180,        // ... and for this long after a kick fired / the foot came down
+  leanSpeed: 1.6,          // rad/s torso tilt speed leaning OUT (|tilt| growing): dodge transition, no punches
+  leanBackSpeed: 3.2,      // ... coming back toward upright (the counter punch): only a violent snap back gates
   bodyVy: 0.45,            // m/s hips/head vertical speed: jump dip / duck transition, no punches
+  duckRiseMs: 450,         // ... except rising out of a duck (until this long after the duck state ended)
+  landMs: 1100,            // ... and the landing of a jump (400 ms .. landMs after it fired)
   duckHead: 0.3,           // head (nose) or shoulder drop below the calibrated standing height enters duck
   duckHeadExit: 0.2,
   duckSpeed: 0.35,         // m/s head drop speed needed in the last 0.8 s (a fast duck, not a slow slouch)
   handsUpOn: 0.55, handsUpOff: 0.35,   // handsUpConfidence hysteresis
+  kneeElev: 0.4,           // kneeStrike: thigh elevation 1 - cos(angle from hanging): 0.4 = 53 deg, 1 = horizontal
+  kneeRise: 0.3,           // ... the knee this far (x torso) above the other knee
+  kneeSpeed: 0.8,          // ... rising at least this fast (m/s): a knee strike, not a slow leg lift
 };
 
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -108,6 +121,10 @@ export class ActionDetector {
     this.sensitivity = 1.0;
     this.filter = new LightPoseFilter({ minCutoff: DETECT.xyMinCutoff, beta: DETECT.xyBeta, zMinCutoff: DETECT.zMinCutoff, zBeta: DETECT.zBeta });
     this._kickArmed = { left: true, right: true };
+    this._kneeArmed = { left: true, right: true };
+    /** Knee-strike mode (safety option instead of front kicks at the screen): a fast knee raise (thigh to ~horizontal,
+     *  no foot extension) also fires kickLeft / kickRight, with info.knee = true. Front kicks keep firing (knee: false). */
+    this.kneeStrike = false;
     this.clock = null;          // optional () => ms (tests); default performance.now()
     /** Seated mode (desk / wheelchair play): duck = head or shoulder drop below the calibrated SEATED height only (no
      *  hip rule), and no jumps / kicks / leg gating (legs hidden or meaningless). Recalibrate after switching. */
@@ -126,13 +143,15 @@ export class ActionDetector {
     this._seenAt = { left: -1e9, right: -1e9 };
     this._handHold = { left: { c: 0, t: -1e9 }, right: { c: 0, t: -1e9 } };
     this._legQuietUntil = -1e9;
+    this._kneeFastAt = { left: -1e9, right: -1e9 };       // kneeStrike: last capture time the knee rose fast
     this._noseBase = null; this._shBase = null;
     this._lastDrop = -1e9;                               // last capture time the head dropped fast
+    this._duckSeen = -1e9;                               // last capture time the duck (squat) state was on
     this._stateOff = {};
     this._fh = [];                                       // punch feature history (~260 ms)
     this._pend = { left: null, right: null };            // punch waiting one frame for confirmation
     this._prevScore = { left: 0, right: 0 };
-    this._lastEv = { left: { t: -1e9 }, right: { t: -1e9 } };
+    this._evHist = { left: [], right: [] };              // per arm punch evidence over the last punchBothMs
     const n0 = () => ({ ext: 2 * 0.04 ** 2, fore: 2 * 0.03 ** 2, rz: 2 * 0.04 ** 2 });
     this._noise = { left: n0(), right: n0() };           // running variance of frame-to-frame feature differences
   }
@@ -143,7 +162,7 @@ export class ActionDetector {
   }
   on(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
   recalibrate() {
-    this.calib = null; this._calibSamples = []; this.hist = []; this.filter?.reset(); this._kickArmed = { left: true, right: true };
+    this.calib = null; this._calibSamples = []; this.hist = []; this.filter?.reset(); this._kickArmed = { left: true, right: true }; this._kneeArmed = { left: true, right: true };
     this._resetTracking();
   }
 
@@ -234,12 +253,13 @@ export class ActionDetector {
     const ankles = J.leftAnkle && J.rightAnkle ? midpoint(J.leftAnkle, J.rightAnkle) : hip.clone();
 
     if (!this.calib) {
-      this._calibSamples.push({ hip: hip.clone(), ankles: ankles.clone(), torso, nose: J.nose?.y ?? sh.y + 0.25, sh: sh.y });
+      const thigh = J.leftKnee && J.rightKnee ? 0.5 * (J.leftHip.distanceTo(J.leftKnee) + J.rightHip.distanceTo(J.rightKnee)) : 0.85 * torso;
+      this._calibSamples.push({ hip: hip.clone(), ankles: ankles.clone(), torso, nose: J.nose?.y ?? sh.y + 0.25, sh: sh.y, thigh });
       if (this._calibSamples.length >= 15) {
-        const c = { hip: new THREE.Vector3(), ankles: new THREE.Vector3(), torso: 0, nose: 0, sh: 0 };
-        for (const x of this._calibSamples) { c.hip.add(x.hip); c.ankles.add(x.ankles); c.torso += x.torso; c.nose += x.nose; c.sh += x.sh; }
+        const c = { hip: new THREE.Vector3(), ankles: new THREE.Vector3(), torso: 0, nose: 0, sh: 0, thigh: 0 };
+        for (const x of this._calibSamples) { c.hip.add(x.hip); c.ankles.add(x.ankles); c.torso += x.torso; c.nose += x.nose; c.sh += x.sh; c.thigh += x.thigh; }
         const n = this._calibSamples.length;
-        c.hip.divideScalar(n); c.ankles.divideScalar(n); c.torso /= n; c.nose /= n; c.sh /= n;
+        c.hip.divideScalar(n); c.ankles.divideScalar(n); c.torso /= n; c.nose /= n; c.sh /= n; c.thigh /= n;
         this.calib = c;
         this._noseBase = c.nose; this._shBase = c.sh;
       }
@@ -335,9 +355,18 @@ export class ActionDetector {
       if (legUp) this._legQuietUntil = tCapture + D.kickQuietMs;
     }
     const kicking = legUp || tCapture < this._legQuietUntil || t - Math.max(this.lastFire.kickLeft ?? -1e9, this.lastFire.kickRight ?? -1e9) < D.kickQuietMs;
-    const jumping = t - (this.lastFire.jump ?? -1e9) < 400 || hipV.y > 0.6;
-    const bodyMoving = Math.abs(hipV.y) > D.bodyVy || noseVy < -D.bodyVy;
-    const leaning = tiltSpeed > D.leanSpeed;
+    // QA design r2: rising out of a duck (the duck -> jab combo) is not a jump take-off, and a landing (hips and head
+    // dropping after a jump fired) is not a duck: only a fall that starts from standing, or a rise that does not come
+    // out of a duck, gates punches.
+    const sinceJump = t - (this.lastFire.jump ?? -1e9);
+    const duckRise = this.state.squat || tCapture - this._duckSeen < D.duckRiseMs;
+    const landing = sinceJump >= 400 && sinceJump < D.landMs;
+    const jumping = sinceJump < 400 || (hipV.y > 0.6 && !duckRise);
+    const bodyMoving = (!landing && (hipV.y < -D.bodyVy || noseVy < -D.bodyVy)) || (hipV.y > D.bodyVy && !duckRise);
+    // QA design r2 P1-1: only the lean-OUT (|tilt| growing fast) gates punches. Coming back toward vertical is when the
+    // dodge -> counter punch is thrown, and the punch cues are measured relative to the moving torso (below).
+    const leanOut = Math.abs(tilt) - Math.abs(old.tilt) > 0;
+    const leaning = tiltSpeed > (leanOut ? D.leanSpeed : D.leanBackSpeed);
 
     // ------------------------------------------------------------------------------------------------ punches
     // QA design r1 P1-1: the punch no longer lives on the depth axis alone. Evidence over the last ~110 ms, each cue
@@ -356,7 +385,6 @@ export class ActionDetector {
     const ev = {};
     for (const side of ['left', 'right']) {
       const a = arms[side], n = this._noise[side];
-      const p = prev?.arms[side];
       // baseline: the newest good frame at least the window old (or 0.6 window, after an occlusion)
       let base = null;
       for (let i = fh.length - 1; i >= 0; i--) {
@@ -365,24 +393,40 @@ export class ActionDetector {
       }
       const b = base?.arms[side];
       if (!a.ok || !b || a.glitch) { ev[side] = null; continue; }
-      // running noise per feature: winsorised EMA of the squared change over the window itself (not frame to frame:
-      // the smoothed depth and wobbling monocular noise are correlated across frames)
-      for (const k of ['ext', 'fore', 'rz']) {
-        const d = a[k] - b[k];
-        n[k] += (Math.min(d * d, 6.25 * n[k]) - n[k]) * 0.015;
-        if (p?.ok && !p.glitch && tCapture - prev.t < 70) { const d1 = a[k] - p[k]; n['f' + k] = (n['f' + k] ?? n[k]) + (Math.min(d1 * d1, 6.25 * (n['f' + k] ?? n[k])) - (n['f' + k] ?? n[k])) * 0.015; }
-      }
+      // z-scores against the running noise of each feature: EMA of the squared change over the window itself (not frame
+      // to frame: the smoothed depth and wobbling monocular noise are correlated across frames); updated below
       const sd = (k, floor) => Math.max(floor, Math.sqrt(n[k]));
       const now = (k) => a[k];
       const dExt = now('ext') - b.ext, dFore = b.fore - now('fore'), dZ = now('rz') - b.rz;
       // image-plane fist displacement vs depth gain over the window: a punch travels mostly toward the camera; an
       // arm dropping to the side, spreading (T-pose) or raising moves the fist a lot in the image
-      const d2 = Math.hypot(a.wx - b.wx, a.wy - b.wy), dReach = (a.reach - b.reach) * a.armLen;
-      ev[side] = { dExt, dFore, dZ, d2, dReach, dy2: a.wy - b.wy, zExt: dExt / sd('ext', 0.02), zFore: dFore / sd('fore', 0.015),
+      // (QA design r2: relative to the torso: the baseline fist offset is turned by the torso's frontal-plane tilt change
+      // over the window, so a punch thrown while coming back from a lean is not read as a fist sweeping sideways)
+      const dth = tilt - base.tilt, c = Math.cos(dth), sn = Math.sin(dth);
+      const bx = b.wx * c + b.wy * sn, by = -b.wx * sn + b.wy * c;
+      // A fist starting above the shoulder (high guard by the face, the brute block) may drop to shoulder height on the
+      // way out: that part of the image-plane drop is free.
+      // In exchange it MUST drop a little (punchHighDrop): holding a high guard, depth noise swings the lifted arm's
+      // extension without the fist going anywhere in the image (the guard-hold phantom).
+      let dy = a.wy - by;
+      const high = by > D.punchHigh, dropped = by - a.wy;
+      if (dy < 0 && by > 0) dy = Math.min(0, dy + by);
+      const d2 = Math.hypot(a.wx - bx, dy), dReach = (a.reach - b.reach) * a.armLen;
+      ev[side] = { dExt, dFore, dZ, d2, dReach, dy2: dy, highHold: high && dropped < D.punchHighDrop, zExt: dExt / sd('ext', 0.02), zFore: dFore / sd('fore', 0.015),
         zDepth: Math.max(-2, Math.min(3, dZ / sd('rz', 0.02))), dt: (tCapture - base.t) / 1000 };
+      // Running noise per feature (QA design r2): a frame is noise only if no feature changed by more than 3 sd, the
+      // combined evidence is small (|zExt + zFore + 0.5 zDepth| < noiseScore) and this arm did not punch in the last
+      // 400 ms. Motion is skipped, not winsorised into the estimate: dense punching (eighth-note runs, brute combos,
+      // missed attempts) used to ratchet the estimate up until real punches stopped reaching punchZ.
+      const E = ev[side], G = D.noiseGate;
+      const dE = dExt * dExt, dF = dFore * dFore, dR = dZ * dZ;
+      if (t - (this.lastFire[side === 'left' ? 'punchLeft' : 'punchRight'] ?? -1e9) > 400 &&
+        Math.abs(E.zExt + E.zFore + 0.5 * E.zDepth) < D.noiseScore && dE < G * n.ext && dF < G * n.fore && dR < G * n.rz) {
+        n.ext += (dE - n.ext) * 0.015; n.fore += (dF - n.fore) * 0.015; n.rz += (dR - n.rz) * 0.015;
+      }
     }
     this._dbg = ev;
-    fh.push({ t: tCapture, arms });
+    fh.push({ t: tCapture, arms, tilt });
     while (fh.length > 2 && tCapture - fh[1].t >= 260) fh.shift();
 
     const cand = [];
@@ -399,20 +443,28 @@ export class ActionDetector {
       const rising = !pa?.ok || a.ext - pa.ext > -0.04;
       const reached = a.ext > D.punchExt;
       // in front, travelling forward (not mainly up / down / sideways in the image)
-      const aimed = a.reach > 0.4 && e.dReach > 0.8 * e.d2 && Math.abs(e.dy2) < D.punchMaxRise + D.punchRiseK * e.dReach;
-      const height = W.y > hip.y + 0.2 * ruler && W.y < headY + 0.12 * ruler;
+      // (rising out of a duck the torso pitches back and carries the fist up / down in the image: only the forward test)
+      const aimed = a.reach > D.punchReachEarly && !e.highHold && (duckRise ? e.dReach > 0.5 * e.d2 :
+        e.dReach > D.punchAim * e.d2 && Math.abs(e.dy2) < D.punchMaxRise + D.punchRiseK * e.dReach);
+      // upper bound: the standing head height too (a jab thrown while still coming up out of a duck)
+      const height = W.y > hip.y + 0.2 * ruler && W.y < Math.max(headY, this._noseBase) + 0.12 * ruler;
       // the other arm's evidence (its last value for up to 100 ms when it has none this frame, e.g. occluded)
       // (z-scores say "it moved", the physical ratio says "as much as this arm": the guard arm drifting while the torso
       // turns into a cross is ~20 %, a both-fists raise is ~100 %)
       const os = side === 'left' ? 'right' : 'left';
-      const eo = ev[os] ?? (tCapture - this._lastEv[os].t < 100 ? this._lastEv[os] : null);
-      const so = eo ? eo.zExt + eo.zFore + 0.5 * eo.zDepth : 0;
-      const both = !!eo && so > D.punchBothZ && so > D.punchBothFrac * score && eo.zExt > 1 && eo.zFore > 0.5 &&
-        eo.dExt > D.punchBothRatio * e.dExt && eo.dFore > D.punchBothRatio * e.dFore;
+      const bothOf = (eo) => {
+        const so = eo.zExt + eo.zFore + 0.5 * eo.zDepth;
+        return so > D.punchBothZ && so > D.punchBothFrac * score && eo.zExt > 1 && eo.zFore > 0.5 &&
+          eo.dExt > D.punchBothRatio * e.dExt && eo.dFore > D.punchBothRatio * e.dFore;
+      };
+      // QA design r2: the other arm's evidence over the last punchBothMs too, not only this frame: under depth noise the
+      // two arms of a guard raise / push do not peak on the same frame
+      let both = ev[os] ? bothOf(ev[os]) : false;
+      if (!both) for (const h of this._evHist[os]) if (tCapture - h.t < D.punchBothMs && bothOf(h)) { both = true; break; }
       const held = handsUp || this.state.tPose || (side === 'left' ? lUp : rUp) || both;
       const shape = reached && aimed && height && rising && big;
       const fresh = t - (this.lastFire[name] ?? -1e9) > 350;
-      if (this.debug) e.cond = { score, votes, big, rising, reached, aimed, height, held, gate: kicking ? 'kick' : jumping ? 'jump' : leaning ? 'lean' : bodyMoving ? 'body' : '' };
+      if (this.debug) e.cond = { reach: a.reach, ext: a.ext, wy: a.wy, score, votes, big, rising, reached, aimed, height, held, gate: kicking ? 'kick' : jumping ? 'jump' : leaning ? 'lean' : bodyMoving ? 'body' : '' };
       let cond = score >= D.punchZ / s && votes >= D.punchVote && shape && !held;
       if (cond && (kicking || jumping || bodyMoving || leaning)) {
         cond = false;
@@ -423,15 +475,19 @@ export class ActionDetector {
       this._pend[side] = null;
       const info = { name, side, speed: (e.dExt * a.armLen) / Math.max(0.05, e.dt), ext: a.ext, score, tCapture };
       if (pend && fresh && !held && !(kicking || jumping || bodyMoving || leaning) && score >= D.punchConfirmZ * D.punchZ / s &&
-        a.ext > D.punchExt - 0.04 && a.reach > 0.35) {
+        a.ext > D.punchExt - 0.04 && a.reach > (pend.short ? D.punchReach : D.punchReach - 0.05)) {
         cand.push(pend);                     // confirmed: fires stamped with the first frame's capture time
       } else if (cond && fresh) {
         // a single-frame spike of evidence is how keypoint noise looks; a punch builds up over 2+ frames. Without a
         // build-up (previous frame's evidence < punchPrevZ) wait one frame for confirmation.
-        if (this._prevScore[side] >= D.punchPrevZ / s) cand.push(info); else this._pend[side] = info;
+        // A fist not yet punchReach out (but punchReachEarly) also waits: the next frame must show it there.
+        if (this._prevScore[side] >= D.punchPrevZ / s && a.reach > D.punchReach) cand.push(info);
+        else this._pend[side] = { ...info, short: a.reach <= D.punchReach };
       }
       this._prevScore[side] = score;
-      this._lastEv[side] = { ...e, t: tCapture };
+      const hs = this._evHist[side];
+      hs.push({ zExt: e.zExt, zFore: e.zFore, zDepth: e.zDepth, dExt: e.dExt, dFore: e.dFore, t: tCapture });
+      while (hs.length && tCapture - hs[0].t > D.punchBothMs) hs.shift();
     }
     if (cand.length === 2) cand.splice(cand[0].speed >= cand[1].speed ? 1 : 0, 1);   // both at once: keep the faster
     for (const c of cand) {
@@ -458,6 +514,7 @@ export class ActionDetector {
       !this.state.jump && ((!this.seated && dy < -0.25 * ruler * s) || drop > D.duckHeadExit * s), t, tCapture, 3,
       { via: hipDuck ? 'hips' : 'head', seated: this.seated });
     this.state.duck = ducking;
+    if (ducking) this._duckSeen = tCapture;
     if (!ducking && Math.abs(noseVy) < 0.15 && Math.abs(hipV.y) < 0.15 && drop < 0.12 && drop > -0.12 && !jumping) {
       this._noseBase += (noseY - this._noseBase) * 0.01; this._shBase += (sh.y - this._shBase) * 0.01;
     }
@@ -476,10 +533,27 @@ export class ActionDetector {
         const drive = vA.y + Math.max(0, vA.dot(fwd)) * 0.7;                    // upward + forward foot speed
         const knee = J[side + 'Knee'].y - J[other + 'Knee'].y > 0.12 * ruler;
         const cond = lift > 0.45 * ruler / s && knee && vA.y > -0.1 && drive > 0.9 / s;
-        this.state[name] = cond;
-        if (cond && this._kickArmed[side] && t - (this.lastFire[name] ?? -1e9) > 400) {
-          this._kickArmed[side] = false;
-          this._fire(name, t, { tCapture, side, speed: drive });
+        // Knee strike (kneeStrike mode, QA design r2 P1-2: the safer option to front kicks at the screen): a fast knee
+        // raise, thigh to ~horizontal (elevation from hanging: 1 - (hip - knee height) / thigh >= kneeElev), the knee
+        // clearly above the other one and rising fast, the support foot on the floor; no foot extension needed.
+        let kneeCond = false, vK = 0;
+        if (this.kneeStrike) {
+          const K = J[side + 'Knee'], H = J[side + 'Hip'], thigh = this.calib.thigh || 0.85 * ruler;
+          const elev = 1 - (H.y - K.y) / thigh;
+          const kneeRise = K.y - J[other + 'Knee'].y;
+          const planted = B.y - this.calib.ankles.y < 0.15 * ruler;
+          // fast = the knee rose at kneeSpeed within the last 250 ms (a short occlusion at the top of a quick knee
+          // freezes / drops the leg for a few frames: the speed seen just before still counts)
+          vK = vel(side + 'Knee').y;
+          if (vK > D.kneeSpeed / s) this._kneeFastAt[side] = tCapture;
+          kneeCond = elev > D.kneeElev / s && kneeRise > D.kneeRise * ruler / s && tCapture - this._kneeFastAt[side] < 250 && planted;
+          if (kneeRise < 0.1 * ruler && lift < 0.12 * ruler) this._kneeArmed[side] = true;
+          if (this.debug) (this._dbgKnee ??= {})[side] = { elev, kneeRise: kneeRise / ruler, v: vK, planted, armed: this._kneeArmed[side] && this._kickArmed[side] };
+        }
+        this.state[name] = cond || kneeCond;
+        if ((cond || (kneeCond && this._kneeArmed[side])) && this._kickArmed[side] && t - (this.lastFire[name] ?? -1e9) > 400) {
+          this._kickArmed[side] = false; this._kneeArmed[side] = false;
+          this._fire(name, t, { tCapture, side, speed: cond ? drive : vK, knee: kneeCond });
         }
       }
     }

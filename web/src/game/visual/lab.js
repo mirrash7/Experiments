@@ -23,9 +23,12 @@ const heroScene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.05, 600);
 // cameras mirror core/camera.js SHOTS (+ the QA-proposed 3/4 rear and front blast shots)
 const CAMS = {
-  gameplay: { pos: [-0.78, 2.05, -3.3], look: [0.22, 1.12, 5.0], fov: 50 },
+  gameplay: { pos: [-1.6, 2.2, -3.0], look: [1.25, 0.95, 5.0], fov: 50 },
+  gameplayR1: { pos: [-0.78, 2.05, -3.3], look: [0.22, 1.12, 5.0], fov: 50 },
   rear30: { pos: [-1.25, 1.85, -2.9], look: [0.3, 1.15, 4.0], fov: 50 },
-  boss: { pos: [-0.7, 1.75, -3.9], look: [0.1, 2.6, 12.0], fov: 54 },
+  boss: { pos: [-1.55, 2.05, -3.3], look: [1.6, 2.4, 12.0], fov: 54 },
+  bossKill: { pos: [-1.3, 1.0, -2.7], look: [0.2, 6.5, 30], fov: 50 },
+  blast: { pos: [3.3, 1.2, 2.5], look: [-0.2, 1.25, 1.4], fov: 38 },
   bossIntro: { pos: [0.55, 0.55, -2.3], look: [0, 4.5, 22], fov: 46 },
   blastFront: { pos: [2.4, 1.35, 2.6], look: [-0.3, 1.3, 1.2], fov: 40 },
   front: { pos: [1.6, 1.45, 3.6], look: [0, 1.25, 0], fov: 38 },
@@ -144,6 +147,7 @@ function blast() {
   const target = visuals.boss.state === 'active' ? visuals.boss.weakPoint : new THREE.Vector3(0, 6, 120);
   const dir = target.clone().sub(o).normalize();
   if (hero) { applyPose(hero, 'punchR'); setTimeout(() => hero && applyPose(hero, 'armsDown'), 900); }
+  bloom(0.55, 0.45);
   visuals.vfx.blast(o, dir);   // target auto-detected (boss weak point / core spirit on the ray)
   visuals.vfx.shockwave(new THREE.Vector3(o.x, 0, o.z), { color: '#ffd070', size: 10 });
   if (visuals.boss.state === 'active') setTimeout(() => visuals.boss.hit('perfect'), 120);
@@ -155,6 +159,16 @@ function refreshAura() {
   else if (overdrive) visuals.vfx.aura(true, { color: '#ffc840', strength: 1 });
   else visuals.vfx.aura(false);
 }
+
+// CORE-like bloom bump (game.bloom: blast +0.55 / 0.45 s, boss defeat +1.0 / 1.8 s) so flash tuning is judged
+// against the real worst case; ?bloomBump=0 turns it off.
+const bloomFx = post.effects?.bloom; const bloomBase = bloomFx?.intensity ?? 0;
+const bloomSt = { add: 0, dur: 0.3 }, bumpOn = params.get('bloomBump') !== '0';
+function bloom(amount, dur) { if (!bumpOn) return; bloomSt.add = Math.max(bloomSt.add, amount); bloomSt.dur = dur; }
+function stepBloom(dt) { if (!bloomFx) return; bloomSt.add = Math.max(0, bloomSt.add - dt * (bloomSt.add / Math.max(0.05, bloomSt.dur)) * 1.2 - dt * 0.05); bloomFx.intensity = bloomBase + bloomSt.add; }
+function defeat() { visuals.boss.defeat(); bloom(1.0, 1.8); }
+// settings.reduceFlashes (the game's accessibility toggle; VISUAL reads ctx.settings.reduceFlashes live)
+ctx.settings.reduceFlashes = params.get('reduceFlashes') === '1';
 
 async function bossAttack(name) {
   const dur = 1.4; const t0 = performance.now();
@@ -183,7 +197,8 @@ mkBtn('bossBtns', 'Stagger', () => visuals.boss.stagger());
 let weakOpen = false;
 mkBtn('bossBtns', 'Weak point', () => { weakOpen = !weakOpen; visuals.boss.openWeakPoint(weakOpen); });
 mkBtn('bossBtns', 'Hit', () => visuals.boss.hit('perfect'));
-mkBtn('bossBtns', 'Defeat', () => visuals.boss.defeat());
+mkBtn('bossBtns', 'Defeat', () => defeat());
+mkBtn('bossBtns', 'Kill cam', () => setCam('bossKill'));
 mkBtn('bossBtns', 'Hide', () => visuals.boss.hide());
 mkBtn('vfxBtns', 'Charge aura', () => charge(!charging));
 mkBtn('vfxBtns', 'Overdrive', () => { overdrive = !overdrive; refreshAura(); });
@@ -191,6 +206,7 @@ mkBtn('vfxBtns', 'BLAST', blast);
 mkBtn('vfxBtns', 'Shockwave', () => visuals.vfx.shockwave(new THREE.Vector3(0, 0, 0)));
 mkBtn('vfxBtns', 'Judgements', () => { ['perfect', 'great', 'good', 'miss'].forEach((k, i) => visuals.vfx.judgement(new THREE.Vector3(0.9 - i * 0.6, 1.5, 0.8), k)); });
 mkBtn('vfxBtns', 'Pulse', () => visuals.stage.pulse(1.5));
+mkBtn('vfxBtns', 'Reduce flashes', (e) => { ctx.settings.reduceFlashes = !ctx.settings.reduceFlashes; e.target.classList.toggle('on', ctx.settings.reduceFlashes); });
 // ground cues: each kind ramps 0 -> 1 over 2 beats (as CORE would call it every frame)
 let cueRun = null;
 function cue(kind, beats = 2) { cueRun = { kind, t: 0, dur: beats * BEAT }; }
@@ -214,6 +230,7 @@ function frame(dtOverride) {
   songTime += dt;
   const beat = songTime / BEAT;
   stepSpirits(dt);
+  stepBloom(dt);
   if (cueRun) { cueRun.t += dt; visuals.vfx.groundCue(cueRun.kind, Math.min(1, cueRun.t / cueRun.dur)); if (cueRun.t > cueRun.dur) cueRun = null; }
   visuals.stage.update(dt, { beat: beatOn ? beat : undefined, act: curAct, intensity: 0.5, overdrive });
   visuals.spirits.update(dt);
@@ -247,7 +264,7 @@ loop();
 // ------------------------------------------------------------------------------------------- automation
 const rt = new THREE.WebGLRenderTarget(64, 64);
 window.lab = {
-  visuals, hero, camera, renderer, quality, setAct, spawn, wave, blast, charge, setCam, bossAttack, cue, CAMS,
+  visuals, hero, camera, renderer, quality, setAct, spawn, wave, blast, charge, setCam, bossAttack, cue, CAMS, ctx, defeat, bloom,
   outcome: (m) => { outcome = m; },
   /** Synchronous boss attack: telegraph over n frames (0 -> 1), then attack(). */
   attackSync(name, n = 84) { for (let i = 1; i <= n; i++) { visuals.boss.telegraph(name, i / n); frame(1 / 60); } visuals.boss.attack(name); },

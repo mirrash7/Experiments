@@ -57,7 +57,9 @@ export function namedFromHero(hero, aspect = 16 / 9, out = {}) {
 
 /**
  * Rasterise a body silhouette from named points into ctx (canvas w x h). Returns the bbox (normalised) or null.
- * The fill is a soft vertical grey ramp so the neon shader still has some "luminance" to posterise.
+ * Smooth capsule body (round-capped limbs, joint discs, oval head) in mid grey, plus thin WHITE bone core lines: the
+ * hologram shader (neon.js holoShade, uSkel = 1) draws the alpha edge as the neon outline and the white lines as the
+ * inner lines of a capsule hologram, like the calibration guide. Alpha is the mask (photo booth / card use only alpha).
  */
 export function drawSkeletonSilhouette(ctx, P, w, h) {
   ctx.clearRect(0, 0, w, h);
@@ -65,28 +67,42 @@ export function drawSkeletonSilhouette(ctx, P, w, h) {
   if (!ok('leftShoulder') || !ok('rightShoulder')) return null;
   const X = (n) => P[n].x * w, Y = (n) => P[n].y * h;
   const sw = Math.max(6, Math.hypot(X('leftShoulder') - X('rightShoulder'), Y('leftShoulder') - Y('rightShoulder')));
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.55, '#b9b9b9'); grad.addColorStop(1, '#7a7a7a');
-  ctx.fillStyle = grad; ctx.strokeStyle = grad;
+  const FILL = '#7a7a7a';
+  ctx.fillStyle = FILL; ctx.strokeStyle = FILL;
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  // torso
-  if (ok('leftHip') && ok('rightHip')) {
+  const mx = (X('leftShoulder') + X('rightShoulder')) / 2, my = (Y('leftShoulder') + Y('rightShoulder')) / 2;
+  const hx = ok('nose') ? X('nose') : mx, hy = ok('nose') ? Y('nose') : my - sw * 0.7;
+  const hasHips = ok('leftHip') && ok('rightHip');
+  // torso: rounded quad (shoulders -> hips), slightly tapered at the waist
+  if (hasHips) {
     ctx.beginPath();
     ctx.moveTo(X('leftShoulder'), Y('leftShoulder')); ctx.lineTo(X('rightShoulder'), Y('rightShoulder'));
     ctx.lineTo(X('rightHip'), Y('rightHip')); ctx.lineTo(X('leftHip'), Y('leftHip')); ctx.closePath();
-    ctx.lineWidth = sw * 0.2; ctx.fill(); ctx.stroke();
+    ctx.lineWidth = sw * 0.32; ctx.fill(); ctx.stroke();
   }
-  const limb = (a, b, wd) => { if (!ok(a) || !ok(b)) return; ctx.lineWidth = wd * sw; ctx.beginPath(); ctx.moveTo(X(a), Y(a)); ctx.lineTo(X(b), Y(b)); ctx.stroke(); };
+  const limbs = [];
+  for (const s of ['left', 'right']) limbs.push([s + 'Shoulder', s + 'Elbow', 0.24], [s + 'Elbow', s + 'Wrist', 0.2], [s + 'Hip', s + 'Knee', 0.32], [s + 'Knee', s + 'Ankle', 0.25]);
+  for (const [a, b, wd] of limbs) { if (!ok(a) || !ok(b)) continue; ctx.lineWidth = wd * sw; ctx.beginPath(); ctx.moveTo(X(a), Y(a)); ctx.lineTo(X(b), Y(b)); ctx.stroke(); }
   for (const s of ['left', 'right']) {
-    limb(s + 'Shoulder', s + 'Elbow', 0.25); limb(s + 'Elbow', s + 'Wrist', 0.2);
-    limb(s + 'Hip', s + 'Knee', 0.34); limb(s + 'Knee', s + 'Ankle', 0.26);
-    if (ok(s + 'Wrist')) { ctx.beginPath(); ctx.arc(X(s + 'Wrist'), Y(s + 'Wrist'), sw * 0.15, 0, Math.PI * 2); ctx.fill(); }
+    if (ok(s + 'Wrist')) { ctx.beginPath(); ctx.arc(X(s + 'Wrist'), Y(s + 'Wrist'), sw * 0.14, 0, Math.PI * 2); ctx.fill(); }
+    if (ok(s + 'Ankle')) { ctx.beginPath(); ctx.ellipse(X(s + 'Ankle'), Y(s + 'Ankle') + sw * 0.05, sw * 0.15, sw * 0.1, 0, 0, Math.PI * 2); ctx.fill(); }
   }
-  // neck + head
-  const mx = (X('leftShoulder') + X('rightShoulder')) / 2, my = (Y('leftShoulder') + Y('rightShoulder')) / 2;
-  const hx = ok('nose') ? X('nose') : mx, hy = ok('nose') ? Y('nose') : my - sw * 0.7;
   ctx.lineWidth = sw * 0.24; ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(hx, hy); ctx.stroke();
-  ctx.beginPath(); ctx.ellipse(hx, hy - sw * 0.05, sw * 0.27, sw * 0.33, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(hx, hy - sw * 0.05, sw * 0.26, sw * 0.32, 0, 0, Math.PI * 2); ctx.fill();
+  // bone core lines (white): spine, collarbone, pelvis, limbs, head ring
+  ctx.strokeStyle = '#ffffff'; ctx.fillStyle = '#ffffff';
+  ctx.lineWidth = Math.max(1, sw * 0.035);
+  const seg = (a, b) => { if (!ok(a) || !ok(b)) return; ctx.beginPath(); ctx.moveTo(X(a), Y(a)); ctx.lineTo(X(b), Y(b)); ctx.stroke(); };
+  seg('leftShoulder', 'rightShoulder');
+  if (hasHips) {
+    seg('leftHip', 'rightHip');
+    const px = (X('leftHip') + X('rightHip')) / 2, py = (Y('leftHip') + Y('rightHip')) / 2;
+    ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(px, py); ctx.stroke();
+  }
+  for (const [a, b] of limbs) seg(a, b);
+  ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(hx, hy + sw * 0.2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(hx, hy - sw * 0.05, sw * 0.17, sw * 0.22, 0, 0, Math.PI * 2); ctx.stroke();
+  for (const n of BODY_NAMES) if (n !== 'nose' && ok(n)) { ctx.beginPath(); ctx.arc(X(n), Y(n), Math.max(1.2, sw * 0.04), 0, Math.PI * 2); ctx.fill(); }
   // bbox
   let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
   for (const n of BODY_NAMES) if (ok(n)) { x0 = Math.min(x0, P[n].x); x1 = Math.max(x1, P[n].x); y0 = Math.min(y0, P[n].y); y1 = Math.max(y1, P[n].y); }

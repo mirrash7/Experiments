@@ -15,6 +15,9 @@ const ICON = {
   home: '<svg viewBox="0 0 24 24"><path d="M12 3 2 12h3v8h5v-6h4v6h5v-8h3z"/></svg>',
   cam: '<svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11z"/></svg>',
   lock: '<svg viewBox="0 0 24 24"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9z"/></svg>',
+  user: '<svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M1 21v-1a7 7 0 0 1 14 0v1z"/><path d="M19 7v6M16 10h6"/></svg>',
+  eye: '<svg viewBox="0 0 24 24"><path d="M12 5C6.5 5 2.4 8.6 1 12c1.4 3.4 5.5 7 11 7s9.6-3.6 11-7c-1.4-3.4-5.5-7-11-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z"/><circle cx="12" cy="12" r="2"/></svg>',
+  warn: '<svg viewBox="0 0 48 48"><path d="M24 4 2 44h44z" class="w-tri"/><path d="M24 17v13M24 35v3" class="w-mark"/><path d="M33 9l3-5M38 14l5-2M15 9l-3-5M10 14l-5-2" class="w-ray"/></svg>',
   hand: '<svg viewBox="0 0 24 24"><path d="M13 1.5a1.5 1.5 0 0 0-1.5 1.5v8h-1V4a1.5 1.5 0 0 0-3 0v10.3L5.4 12a1.6 1.6 0 0 0-2.3 2.2l4.6 5.6A6 6 0 0 0 12.4 22H14a6 6 0 0 0 6-6V7a1.5 1.5 0 0 0-3 0v4h-1V3a1.5 1.5 0 0 0-1.5-1.5c-.5 0-1 .3-1.5.6z"/></svg>',
 };
 export { ICON };
@@ -85,7 +88,7 @@ export function bootScreen(ctx, { onTracker, current = null, available = {}, sta
 }
 
 // ======================================================================================= title
-const MODES = [['showcase', 'SHOWCASE', 'No-fail · see it all'], ['challenge', 'CHALLENGE', 'Hearts can run out']];
+const MODES = [['showcase', 'SHOWCASE', 'No-fail · see it all'], ['challenge', 'CHALLENGE', 'Hard · lose hearts = game over']];
 /** Showcase / Challenge segmented toggle. Writes settings.mode, emits 'settings:change', calls onMode(mode). */
 function modeToggle(ctx, { mode, onMode, idPrefix = 'mode' }) {
   const settings = ctx.settings || {};
@@ -100,19 +103,95 @@ function modeToggle(ctx, { mode, onMode, idPrefix = 'mode' }) {
   return h('div', { class: 'bl-mode' }, h('span', { class: 'bl-mode-lab' }, 'MODE'), h('div', { class: 'bl-seg' }, btns));
 }
 
-/** title({ onPlay, onTutorial, onSettings, mode?, onMode?(mode), best?, tutorialLabel? }) */
-export function titleScreen(ctx, { onPlay, onTutorial, onSettings, mode, onMode, best, tutorialLabel = 'TUTORIAL' } = {}) {
+/**
+ * title({ onPlay, onTutorial, onSettings, mode?, onMode?(mode), best?, tutorialLabel?, onNewPlayer?, kiosk? })
+ * NEW PLAYER (hand dwell 1.2 s, never punch-selected): onNewPlayer, else ctx.game.newPlayer() (CORE resets the per-player
+ * flags / mode / seated and recalibrates). kiosk: shows the KIOSK badge (default: settings.dev.kiosk, ctx.game.kiosk, ?kiosk=1).
+ */
+export function titleScreen(ctx, { onPlay, onTutorial, onSettings, mode, onMode, best, todayBest, tutorialLabel = 'TUTORIAL', onNewPlayer, kiosk } = {}) {
+  const isKiosk = !!(kiosk ?? (ctx.settings?.dev?.kiosk || ctx.game?.kiosk || /[?&]kiosk=1\b/.test(location.search)));
+  const newPlayer = () => {
+    try { if (onNewPlayer) onNewPlayer(); else ctx.game?.newPlayer?.(); } catch (e) { console.error(e); }
+    ctx.bus?.emit?.('ui:newPlayer', {});
+  };
+  const np = uiButton('NEW PLAYER', newPlayer, { cls: 'is-small bl-title-newplayer', icon: ICON.user, id: 'new-player', sub: 'fresh start: intro + safety check' });
+  np.setAttribute('data-ui-dwell', '1.2'); np.setAttribute('data-ui-nopunch', '');
   const node = h('div', { class: 'bl-title' },
-    h('div', { class: 'bl-title-top' }, LOGO(), h('p', { class: 'bl-tagline bl-title-tagline' }, 'Strike to the beat · Shatter the glitch')),
+    h('div', { class: 'bl-title-top' }, LOGO(),
+      h('p', { class: 'bl-title-tagline' }, h('b', {}, 'Your body is the controller'), h('span', {}, 'Punch · kick · dodge to the beat · shatter the glitch'))),
+    isKiosk ? h('div', { class: 'bl-kiosk-tag' }, h('i'), h('b', {}, 'KIOSK MODE'), h('span', {}, 'resets for every new player')) : null,
     h('nav', { class: 'bl-menu' },
       uiButton('PLAY', onPlay, { cls: 'is-primary', icon: ICON.play, id: 'play' }),
       uiButton(tutorialLabel, onTutorial, { icon: ICON.learn, id: 'tutorial' }),
       uiButton('SETTINGS', onSettings, { icon: ICON.gear, id: 'settings' }),
       modeToggle(ctx, { mode, onMode }),
-      Number.isFinite(+best) && +best > 0 ? h('div', { class: 'bl-title-best' }, h('span', {}, 'BEST'), h('b', {}, Math.round(+best).toLocaleString('en-US'))) : null),
+      Number.isFinite(+best) && +best > 0 ? h('div', { class: 'bl-title-best' }, h('span', {}, isKiosk ? 'YOUR BEST' : 'BEST'), h('b', {}, Math.round(+best).toLocaleString('en-US'))) : null,
+      Number.isFinite(+todayBest) && +todayBest > 0 && +todayBest !== +best ? h('div', { class: 'bl-title-best is-today' }, h('span', {}, "TODAY'S BEST"), h('b', {}, Math.round(+todayBest).toLocaleString('en-US'))) : null,
+      np),
     h('div', { class: 'bl-hint-card' }, h('i', { html: ICON.hand }),
       h('div', {}, h('b', {}, 'Raise a hand to aim'), h('span', {}, 'Hold still 0.8 s or punch to select · mouse & keys work too'))));
-  return { node };
+  return { node, kiosk: isKiosk };
+}
+
+// ======================================================================================= photosensitivity notice
+/**
+ * flashNotice({ onDone({ reduceFlashes }), onReduce?(on) | onToggle?(on), reduce? | reduceFlashes?, autoContinueS? }):
+ * first-boot photosensitivity notice (autoContinueS > 0: continues by itself, progress bar on OK).
+ * OK (hand dwell 1.2 s, click, Enter / Space) continues; "REDUCE FLASHES" toggles settings.reduceFlashes and emits
+ * bus 'settings:change' { key: 'reduceFlashes', value }. Handle: { node, get reduce, finish() }.
+ */
+export function flashNoticeScreen(ctx, { onDone, onReduce, onToggle, reduce, reduceFlashes, autoContinueS = 0 } = {}) {
+  const settings = ctx.settings || {};
+  let on = !!(reduce ?? reduceFlashes ?? settings.reduceFlashes);
+  onReduce ??= onToggle;
+  const state = h('b', { class: 'bl-fn-state' });
+  const toggle = uiButton('REDUCE FLASHES', () => {
+    on = !on; settings.reduceFlashes = on; paint();
+    try { onReduce?.(on); } catch (e) { console.error(e); }
+    ctx.bus?.emit?.('settings:change', { key: 'reduceFlashes', value: on, settings });
+  }, { cls: 'bl-fn-toggle', icon: ICON.eye, id: 'flash-reduce' });
+  toggle.querySelector('.bl-btn-label').append(state);
+  toggle.setAttribute('data-ui-dwell', '1.2'); toggle.setAttribute('data-ui-nopunch', '');
+  const ok = uiButton("OK, LET'S GO", () => finish(), { cls: 'is-primary', icon: ICON.play, id: 'flash-ok' });
+  ok.setAttribute('data-ui-dwell', '1.2');
+  function paint() {
+    state.textContent = on ? 'ON' : 'OFF';
+    toggle.classList.toggle('is-on', on);
+    node.classList.toggle('is-reduced', on);
+  }
+  const node = h('div', { class: 'bl-fn' },
+    h('div', { class: 'bl-panel bl-fn-panel' },
+      h('div', { class: 'bl-fn-icon', html: ICON.warn }),
+      h('div', { class: 'bl-kicker bl-fn-kicker' }, 'PHOTOSENSITIVITY WARNING'),
+      h('h1', { class: 'bl-fn-title' }, 'Bright flashes ahead'),
+      h('p', { class: 'bl-fn-text' }, 'This game uses flashing lights and fast-moving patterns. If you or anyone watching has epilepsy or has had a seizure, check with a doctor before playing.'),
+      h('p', { class: 'bl-fn-stop' }, 'Stop at once if you feel dizzy, sick or your vision changes.'),
+      h('div', { class: 'bl-fn-actions' }, toggle, ok),
+      h('p', { class: 'bl-fn-hint' }, 'Reduce flashes softens blasts, hits and the photo flash. You can change it later in Settings.')));
+  paint();
+  // optional auto-continue (kiosk: nobody at the keyboard); a ring on the OK button shows it
+  const autoBar = h('i', { class: 'bl-fn-auto' });
+  if (autoContinueS > 0) ok.append(autoBar);
+  let done = false, t = 0;
+  function finish() {
+    if (done) return;
+    done = true;
+    removeEventListener('keydown', onKey);
+    try { ctx.audio?.sfx?.('uiSelect'); } catch { /* */ }
+    onDone?.({ reduceFlashes: on });
+  }
+  const onKey = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); finish(); } };
+  addEventListener('keydown', onKey);
+  return {
+    node, get reduce() { return on; }, finish,
+    update(dt) {
+      if (done || !(autoContinueS > 0)) return;
+      t += dt;
+      autoBar.style.transform = `scaleX(${Math.min(1, t / autoContinueS).toFixed(3)})`;
+      if (t >= autoContinueS) finish();
+    },
+    dispose() { removeEventListener('keydown', onKey); },
+  };
 }
 
 // ======================================================================================= settings
@@ -125,6 +204,7 @@ const SETTING_ROWS = [
   { key: 'volume', label: 'Volume', step: 0.1, min: 0, max: 1, fmt: (v) => `${Math.round(v * 100)}%` },
   { key: 'judgeOffsetMs', label: 'Judge offset', sub: 'Shift timing if hits feel late / early', step: 10, min: -150, max: 150, fmt: (v) => `${v > 0 ? '+' : ''}${v} ms` },
   { key: 'quality', label: 'Graphics', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] },
+  { key: 'reduceFlashes', label: 'Reduce flashes', sub: 'Softer blasts, hits and photo flash', options: [[false, 'Off'], [true, 'On']] },
 ];
 const VOLUME_PARTS = [['master', 'Master volume'], ['music', 'Music'], ['sfx', 'Effects']];
 
@@ -133,7 +213,7 @@ const VOLUME_PARTS = [['master', 'Master volume'], ['music', 'Music'], ['sfx', '
  * CORE's { master, music, sfx } object: the object gets one stepper per channel and audio.setVolume({ ...volume }).
  */
 export function settingsScreen(ctx, { settings = {}, onClose, onChange } = {}) {
-  const defaults = { mode: 'showcase', tracker: 'hmr', seated: false, upperBodyOnly: false, difficulty: 'normal', volume: { master: 0.9, music: 0.8, sfx: 0.9 }, judgeOffsetMs: 0, quality: 'high' };
+  const defaults = { mode: 'showcase', tracker: 'hmr', seated: false, upperBodyOnly: false, difficulty: 'normal', volume: { master: 0.9, music: 0.8, sfx: 0.9 }, judgeOffsetMs: 0, quality: 'high', reduceFlashes: false };
   for (const [k, v] of Object.entries(defaults)) if (settings[k] === undefined) settings[k] = typeof v === 'object' ? { ...v } : v;
   const emit = (key, value) => {
     try { onChange?.(key, value, settings); } catch (e) { console.error(e); }
@@ -183,10 +263,11 @@ export function settingsScreen(ctx, { settings = {}, onClose, onChange } = {}) {
 
 // ======================================================================================= clear-space check
 /**
- * clearSpace({ onDone({ skipped, auto, seated }), seated?, autoContinue = true, holdS = 2.5 }): a safety check before
- * the T-pose / first run. Shows a top-down 2 m x 2 m play-area diagram (or the seated "arm's reach" variant), a short
- * checklist and a live framing check; continues on "I'M CLEAR" (hand dwell / click) or automatically after the body
- * has been framed well for holdS seconds. "PLAY SEATED" / "PLAY STANDING" switches the variant; onDone reports it.
+ * clearSpace({ onDone({ skipped, auto, seated }), seated?, autoContinue = true, holdS = 4 }): a safety check before
+ * the T-pose / first run, readable at a glance: a big top-down 2 m x 2 m diagram (or the seated "arm's reach" variant),
+ * three short bullets with pictograms and a live framing check; continues on "I'M CLEAR" (hand dwell / click) or
+ * automatically (countdown ring) after the body has been framed well for holdS seconds. "PLAY SEATED / STANDING
+ * INSTEAD" switches the variant; onDone reports it.
  */
 const CS_DIAGRAM = {
   seated: `<svg viewBox="0 0 240 260" class="bl-cs-svg"><rect x="70" y="14" width="100" height="12" rx="3" class="cs-screen"/><circle cx="120" cy="20" r="3" class="cs-cam"/>
@@ -201,13 +282,23 @@ const CS_DIAGRAM = {
       <circle cx="120" cy="146" r="14" class="cs-player"/><path d="M78 146h84" class="cs-player-arms"/><path d="M120 120v-14M114 112l6-8 6 8" class="cs-facing"/></svg>`,
 };
 const CS_ITEMS = {
-  seated: ['Sit on a stable chair without wheels or armrests', 'Nothing within arm\'s reach: desk, screen, lamps', 'Sit about 1.5 m from the camera'],
-  standing: ['No furniture, pets or people inside the square', 'Stand well back from the screen: punches and kicks aim at it', 'Non-slip floor: shoes or bare feet, no socks'],
+  seated: ['Stable chair, no wheels', "Nothing within arm's reach", 'Sit ~1.5 m from the camera'],
+  standing: ['Nothing inside the square', 'Stand 2–2.5 m from the screen', 'Shoes or bare feet, no socks'],
 };
-export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, holdS = 2.5 } = {}) {
+const CS_ICONS = {
+  // tiny pictograms for the bullets: clear zone, distance, footing / chair, reach
+  zone: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/><path d="M8 8l8 8M16 8l-8 8"/></svg>',
+  dist: '<svg viewBox="0 0 24 24"><path d="M3 12h18M3 12l4-4M3 12l4 4M21 12l-4-4M21 12l-4 4"/></svg>',
+  feet: '<svg viewBox="0 0 24 24"><path d="M7 3c2 0 3 2 3 5s-1 7-3 7-3-3-3-6 1-6 3-6zM17 8c2 0 3 2 3 5s-1 7-3 7-3-3-3-6 1-6 3-6z"/></svg>',
+  chair: '<svg viewBox="0 0 24 24"><path d="M7 3v10h10M7 13v8M17 13v8M7 9h10"/></svg>',
+  reach: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="4 3"/><circle cx="12" cy="12" r="2"/></svg>',
+};
+const CS_ITEM_ICONS = { seated: ['chair', 'reach', 'dist'], standing: ['zone', 'dist', 'feet'] };
+export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, holdS = 4 } = {}) {
   let isSeated = !!(seated ?? ctx.settings?.seated);
   const live = h('div', { class: 'bl-cs-live' }, h('i'), h('b', {}, 'LOOKING FOR YOU…'), h('span', {}, ''));
-  const auto = h('div', { class: 'bl-cs-auto' });
+  const autoNum = h('b', {}, '');
+  const auto = h('div', { class: 'bl-cs-auto' }, h('span', { class: 'bl-cs-ring', html: '<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17" class="cs-ring-bg"/><circle cx="20" cy="20" r="17" class="cs-ring" pathLength="100"/></svg>' }), autoNum);
   const btn = uiButton("I'M CLEAR", () => finish(false, false), { cls: 'is-primary', icon: ICON.play, id: 'clear-ok' });
   btn.setAttribute('data-ui-dwell', '1.2'); btn.setAttribute('data-ui-nopunch', '');
   const swap = uiButton('', () => { isSeated = !isSeated; build(); good = 0; }, { cls: 'is-small', id: 'clear-seated' });
@@ -216,21 +307,19 @@ export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, hol
   skip.setAttribute('data-ui-mouseonly', '');
   const kicker = h('div', { class: 'bl-kicker' }, 'SAFETY CHECK');
   const title = h('h1', { class: 'bl-h1' });
-  const text = h('p', { class: 'bl-calib-text' });
   const list = h('ul', { class: 'bl-cs-list' });
   const diagram = h('div', { class: 'bl-cs-diagram' });
   const node = h('div', { class: 'bl-cs' },
     h('div', { class: 'bl-panel bl-cs-panel' },
-      h('div', { class: 'bl-cs-copy' }, kicker, title, text, list, live, h('div', { class: 'bl-cs-actions' }, btn, swap, auto)),
-      diagram),
+      diagram,
+      h('div', { class: 'bl-cs-copy' }, kicker, title, list, live, h('div', { class: 'bl-cs-actions' }, btn, auto), h('div', { class: 'bl-cs-swap' }, swap))),
     h('div', { class: 'bl-calib-skip' }, skip));
   function build() {
     node.classList.toggle('is-seated', isSeated);
-    title.replaceChildren(isSeated ? 'CLEAR YOUR' : 'CLEAR', h('br'), isSeated ? 'REACH' : 'YOUR SPACE');
-    text.textContent = isSeated ? 'Seated mode: you will punch, guard, lean to dodge and charge the blast from your chair.' : 'You will punch, kick, jump and duck. Make sure you have about 2 m × 2 m of clear floor.';
-    list.replaceChildren(...CS_ITEMS[isSeated ? 'seated' : 'standing'].map((t) => h('li', {}, t)));
+    title.replaceChildren(...(isSeated ? ['CLEAR YOUR', h('br'), 'REACH'] : ['CLEAR', h('br'), h('em', {}, '2 × 2 m')]));
+    list.replaceChildren(...CS_ITEMS[isSeated ? 'seated' : 'standing'].map((t, i) => h('li', {}, h('i', { html: CS_ICONS[CS_ITEM_ICONS[isSeated ? 'seated' : 'standing'][i]] }), t)));
     diagram.innerHTML = CS_DIAGRAM[isSeated ? 'seated' : 'standing'];
-    swap.querySelector('.bl-btn-label').firstChild.textContent = isSeated ? 'PLAY STANDING' : 'PLAY SEATED';
+    swap.querySelector('.bl-btn-label').firstChild.textContent = isSeated ? 'PLAY STANDING INSTEAD' : 'PLAY SEATED INSTEAD';
   }
   build();
   let done = false, good = 0;
@@ -252,12 +341,15 @@ export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, hol
       good = ok ? good + dt : 0;
       const [ttl, sub, kind] = !f ? ['LOOKING FOR YOU…', 'Step in front of the camera', 'wait'] : d ? [DISTANCE_TEXT[d].title, DISTANCE_TEXT[d].sub, 'warn'] : [isSeated ? 'FRAMED WELL' : 'WHOLE BODY IN VIEW', 'Distance looks right', 'ok'];
       if (live.dataset.kind !== kind || live.children[1].textContent !== ttl) { live.dataset.kind = kind; live.children[1].textContent = ttl; live.children[2].textContent = sub; }
-      if (autoContinue && ok) {
+      const showAuto = autoContinue && ok;
+      auto.classList.toggle('is-on', showAuto);
+      if (showAuto) {
         const left = Math.max(0, holdS - good);
-        auto.textContent = `continuing in ${Math.ceil(left)}…`;
+        const txt = String(Math.ceil(left));
+        if (autoNum.textContent !== txt) autoNum.textContent = txt;
         auto.style.setProperty('--k', (good / holdS).toFixed(3));
         if (good >= holdS) finish(false, true);
-      } else if (auto.textContent) { auto.textContent = ''; auto.style.setProperty('--k', 0); }
+      } else if (autoNum.textContent) { autoNum.textContent = ''; auto.style.setProperty('--k', 0); }
     },
   };
 }
@@ -369,7 +461,7 @@ const fmtInt = (v) => Math.round(+v || 0).toLocaleString('en-US');
  *   body.timingSdMs, body.moveCounts { punch, kick, jump, squat, dodge, guard, blast }.
  * photoCard (CV team): HTMLElement | canvas | { node|canvas|src, caption?, pending?: true } ; also handle.setPhotoCard().
  */
-export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onSkipReplay, photoCard = null } = {}) {
+export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onSkipReplay, photoCard = null } = {}, shared = {}) {
   const rank = computeRank(stats);
   const j = stats.judgements || {};
   const total = Math.max(1, (j.perfect || 0) + (j.great || 0) + (j.good || 0) + (j.miss || 0));
@@ -531,14 +623,50 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onS
     if (!media && o.src) media = h('img', { src: o.src, alt: o.caption || 'Photo card' });
     photoSlot.classList.remove('bl-hidden');
     photoSlot.classList.toggle('is-pending', !!o.pending && !media);
-    photoSlot.append(
+    // native append() would print falsy children as text ("null"): filter them out
+    photoSlot.append(...[
       h('div', { class: 'bl-res-photo-head' }, h('i', { html: ICON.cam }), h('span', {}, o.title || 'PHOTO BOOTH')),
-      h('div', { class: 'bl-res-photo-media' }, media || h('div', { class: 'bl-res-photo-wait' }, h('i', { html: ICON.cam }), h('b', {}, o.caption || 'STRIKE YOUR VICTORY POSE'))),
+      h('div', { class: 'bl-res-photo-media' }, media || h('div', { class: 'bl-res-photo-wait' }, h('i', { html: ICON.cam }), h('b', {}, o.caption || 'STRIKE YOUR VICTORY POSE'), h('span', {}, 'both hands up · V · flex'))),
       media && o.caption ? h('div', { class: 'bl-res-photo-cap' }, o.caption) : null,
-      ...(o.actions || []));
+      ...(o.actions || [])].filter((c) => c !== null && c !== undefined && c !== false));
     photoSlot.animate([{ opacity: 0, transform: 'translateY(16px)' }, { opacity: 1, transform: 'none' }], { duration: 400, easing: 'cubic-bezier(.2,.8,.2,1)' });
   }
   setPhotoCard(photoCard);
+
+  // CV Photo Booth overlay (cv/photobooth.js, fixed full-screen): while the stats show, lay it out around the panels.
+  // html.bl-booth-results + CSS vars, consumed by game.css: headline in the centre gap between the columns on a dark
+  // plate, countdown + hold ring beside the hero (not on its chest), privacy line above the button row.
+  const de = document.documentElement;
+  let layoutT = -1;
+  function boothLayout() {
+    const W = innerWidth, H = innerHeight;
+    const lr = left.getBoundingClientRect(), rr = right.querySelector('.bl-res-right')?.getBoundingClientRect() || right.getBoundingClientRect();
+    const nr = nav.getBoundingClientRect();
+    if (!(lr.width > 0 && rr.width > 0)) return;
+    const gl = lr.right, gr = rr.left;
+    const set = (k, v) => de.style.setProperty(k, `${Math.round(v)}px`);
+    set('--bl-booth-cx', (gl + gr) / 2);
+    set('--bl-booth-w', Math.max(180, gr - gl - 28));
+    set('--bl-booth-toast-b', Math.max(12, H - nr.top + 12));
+    // countdown + hold ring: inside the PHOTO BOOTH panel (where the card lands), else beside the hero
+    const pr = !photoSlot.classList.contains('bl-hidden') ? photoSlot.getBoundingClientRect() : null;
+    if (pr && pr.height > 60) {
+      set('--bl-booth-count-x', pr.left + pr.width / 2);
+      set('--bl-booth-count-y', pr.top + pr.height * 0.55);
+      set('--bl-booth-count-size', Math.min(pr.height * 0.95, H * 0.3));
+    } else {
+      const hb = shared.heroBounds?.();
+      let cx = hb ? (hb.r + gr) / 2 : W * 0.78;
+      cx = Math.max(hb ? hb.r + H * 0.1 : W * 0.6, cx);
+      set('--bl-booth-count-x', cx);
+      set('--bl-booth-count-y', Math.min(Math.max(rr.bottom + H * 0.17, H * 0.56), nr.top - H * 0.16));
+      set('--bl-booth-count-size', H * 0.26);
+    }
+  }
+  function setDocPhase() {
+    de.classList.toggle('bl-booth-results', phase === 'stats');
+    de.classList.toggle('bl-res-replay', phase === 'replay' || phase === 'replay-wait');
+  }
 
   function slamStamp() {
     stampDone = true;
@@ -566,6 +694,8 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onS
     setPhotoCard,
     update(dt) {
       t += dt;
+      setDocPhase();
+      if (phase === 'stats' && t - layoutT > 0.25) { layoutT = t; boothLayout(); }
       // replay state: bus events, or poll CORE's player
       const rp = ctx.game?.replay;
       if (rp && rp.active) { if (phase !== 'replay') showReplay(); prog = Math.max(prog, Math.min(1, rp.progress || 0)); }
@@ -592,7 +722,7 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onS
       }
       if (!stampDone && st > 1.3) slamStamp();
     },
-    dispose() { offs.forEach((f) => { try { f?.(); } catch { /* */ } }); releaseMirror(); },
+    dispose() { offs.forEach((f) => { try { f?.(); } catch { /* */ } }); releaseMirror(); de.classList.remove('bl-booth-results', 'bl-res-replay'); },
   };
 }
 

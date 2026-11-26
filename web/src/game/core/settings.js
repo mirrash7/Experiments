@@ -5,6 +5,9 @@
 //   ?upper=1 (upper body only)  ?difficulty=easy|normal|hard  ?seed=123  ?stub=all|visual,audio,ui  ?quality=low|medium|high|auto
 //   ?offset=ms (judge offset)  ?mute=1  ?act=0|1|2 (start at that act, no Awakening)  ?mode=showcase|challenge
 //   ?awaken=1|0 (force / skip the Act 0 "Awakening" intro)  ?seated=1  ?space=0 (skip the clear-space prompt)
+//   ?kiosk=1 (shared machine: per-player flags live in memory, never persists Challenge / seated, resets after results)
+//   ?length=full|demo (demo: ~4 min run, shorter acts; the default in kiosk)  ?knee=1 (knee strikes instead of kicks)
+//   ?reduceFlashes=1 (cap bloom bumps, no white flashes)  ?notice=0 (skip the photosensitivity notice)
 
 const KEY = 'breaklight.settings';
 
@@ -35,7 +38,12 @@ export const DEFAULTS = {
   quality: 'auto',
   showPip: true,
   hearts: null,               // null = by difficulty (HEARTS)
+  length: 'full',             // 'full' (3 x ~50 s acts) | 'demo' (~4 min session: shorter acts; the default in kiosk mode)
+  kneeStrikes: false,         // crawlers are hit with a knee raise (no kick toward the screen); kicks still count
+  reduceFlashes: false,       // photosensitivity: bloom bumps capped, no white flashes (VISUAL / CV / fx read it too)
 };
+/** Settings that belong to one player: never persisted in kiosk mode, reset by game.newPlayer(). */
+export const PLAYER_KEYS = ['mode', 'seated', 'upperBodyOnly'];
 
 /** Hearts per difficulty (settings.hearts overrides). */
 export const HEARTS = { easy: 8, normal: 5, hard: 4 };
@@ -55,21 +63,56 @@ export const upperOnlyOf = (s) => !!(s.upperBodyOnly || s.seated);
 const FLAGS = 'breaklight.flags', BEST = 'breaklight.best';
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k) || 'null') || {}; } catch { return {}; } }
 function writeJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } }
+/** Per-player flags (awakened, spaceChecked, tutorialDone, flashNotice). In kiosk mode they live in memory only, so
+ *  every new player gets the Awakening, the safety screen and the flash notice (flags.setVolatile(true)). */
+const PLAYER_FLAGS = ['awakened', 'spaceChecked', 'tutorialDone', 'flashNotice'];
+let volatile = null;
 export const flags = {
-  get(name) { return !!readJSON(FLAGS)[name]; },
-  set(name, on = true) { const f = readJSON(FLAGS); f[name] = on; writeJSON(FLAGS, f); },
+  get(name) { return volatile ? !!volatile[name] : !!readJSON(FLAGS)[name]; },
+  set(name, on = true) { if (volatile) { volatile[name] = on; return; } const f = readJSON(FLAGS); f[name] = on; writeJSON(FLAGS, f); },
+  setVolatile(on) { volatile = on ? (volatile ?? {}) : null; },
+  get volatile() { return !!volatile; },
+  /** New player: forget the per-player flags (memory in kiosk mode, localStorage otherwise). */
+  resetPlayer() {
+    if (volatile) { volatile = {}; return; }
+    const f = readJSON(FLAGS); for (const k of PLAYER_FLAGS) delete f[k]; writeJSON(FLAGS, f);
+  },
 };
-const bestKey = (settings) => `${settings.mode}:${settings.difficulty}${settings.seated ? ':seated' : upperOnlyOf(settings) ? ':upper' : ''}`;
-/** Stored best for the current mode / difficulty (0 = none). */
-export function bestFor(settings) { return readJSON(BEST)[bestKey(settings)] ?? 0; }
-/** Best score per mode + difficulty (+ seated / upper). Returns { best, previous, isNew }. */
+const bestKey = (settings) => `${settings.mode}:${settings.difficulty}${settings.length === 'demo' ? ':demo' : ''}${settings.seated ? ':seated' : upperOnlyOf(settings) ? ':upper' : ''}`;
+/** This player's bests in kiosk mode (memory; cleared by game.newPlayer()). */
+let playerBest = {};
+export function resetPlayerBest() { playerBest = {}; }
+const TODAY = 'breaklight.today';
+const today = () => new Date().toISOString().slice(0, 10);
+/** Best score of the day on this machine (every player; the kiosk title shows it). */
+export function todayBest(settings) {
+  const t = readJSON(TODAY);
+  return t.date === today() ? (t.best?.[bestKey(settings)] ?? 0) : 0;
+}
+/** Stored best for the current mode / difficulty (0 = none). In kiosk mode: this player's best this session. */
+export function bestFor(settings) { return settings.kiosk ? (playerBest[bestKey(settings)] ?? 0) : readJSON(BEST)[bestKey(settings)] ?? 0; }
+/**
+ * Best score per mode + difficulty (+ length, seated / upper). Returns { best, previous, isNew, today, newToday }.
+ * Kiosk mode: "best" is the player's own session best, and today's machine-wide best is tracked too.
+ */
 export function submitBest(settings, score) {
   const key = bestKey(settings);
-  const all = readJSON(BEST);
-  const previous = all[key] ?? 0;
-  const isNew = score > previous && score > 0;
-  if (isNew) { all[key] = Math.round(score); writeJSON(BEST, all); }
-  return { best: Math.max(previous, Math.round(score)), previous, isNew, key };
+  const s = Math.round(score);
+  const t = readJSON(TODAY);
+  if (t.date !== today()) { t.date = today(); t.best = {}; }
+  t.best ??= {};
+  const prevToday = t.best[key] ?? 0;
+  const newToday = s > prevToday && s > 0;
+  if (newToday) { t.best[key] = s; writeJSON(TODAY, t); }
+  let previous;
+  if (settings.kiosk) { previous = playerBest[key] ?? 0; if (s > previous) playerBest[key] = s; }
+  else {
+    const all = readJSON(BEST);
+    previous = all[key] ?? 0;
+    if (s > previous && s > 0) { all[key] = s; writeJSON(BEST, all); }
+  }
+  const isNew = s > previous && s > 0;
+  return { best: Math.max(previous, s), previous, isNew, key, today: Math.max(prevToday, s), newToday };
 }
 
 function deepMerge(a, b) {
@@ -91,11 +134,24 @@ export function loadSettings(params = new URLSearchParams(location.search)) {
   if (p('quality')) s.quality = p('quality');
   if (p('mode')) s.mode = p('mode') === 'challenge' ? 'challenge' : 'showcase';
   if (p('seated')) s.seated = p('seated') === '1';
+  if (p('length')) s.length = p('length') === 'demo' ? 'demo' : 'full';
+  if (p('knee')) s.kneeStrikes = p('knee') === '1';
+  if (p('reduceFlashes') || p('flashes')) s.reduceFlashes = p('reduceFlashes') === '1' || p('flashes') === '0';
   // a legacy number volume (an older settings screen stepped it as one value) becomes the channel object again
   s.volume = audioVolume(s);
   delete s.musicVolume; delete s.sfxVolume;
   if (s.mode !== 'challenge') s.mode = 'showcase';
+  if (s.length !== 'demo') s.length = 'full';
   if (p('mute') === '1') s.volume.master = 0;
+  // kiosk (shared machine): a stored Challenge / seated choice never carries over to the next player; demo length
+  // is the default; per-player flags live in memory (flags.setVolatile)
+  const kiosk = p('kiosk') === '1';
+  if (kiosk) {
+    for (const k of PLAYER_KEYS) if (!p(k === 'upperBodyOnly' ? 'upper' : k)) s[k] = DEFAULTS[k];
+    if (!p('length')) s.length = 'demo';
+    flags.setVolatile(true);
+  }
+  Object.defineProperty(s, 'kiosk', { value: kiosk, enumerable: false, writable: true });
   // dev flags (not persisted)
   const dev = {
     debug: p('debug') === '1',
@@ -106,11 +162,22 @@ export function loadSettings(params = new URLSearchParams(location.search)) {
     act: p('act') != null ? +p('act') : null,
     awaken: p('awaken'),                    // '1' force the Awakening intro, '0' skip it, null = first run only
     space: p('space'),                      // '0' skip the clear-space prompt
+    notice: p('notice'),                    // '0' skip the photosensitivity notice
   };
   Object.defineProperty(s, 'dev', { value: dev, enumerable: false });
   Object.defineProperty(s, 'save', {
     enumerable: false,
-    value() { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* ignore */ } },
+    value() {
+      try {
+        const out = { ...s };
+        if (s.kiosk) {                      // per-player choices stay in memory; keep what is stored for them
+          let saved = {}; try { saved = JSON.parse(localStorage.getItem(KEY) || 'null') || {}; } catch { /* */ }
+          for (const k of PLAYER_KEYS) { if (k in saved) out[k] = saved[k]; else delete out[k]; }
+          if ('length' in saved) out.length = saved.length; else delete out.length;
+        }
+        localStorage.setItem(KEY, JSON.stringify(out));
+      } catch { /* ignore */ }
+    },
   });
   return s;
 }

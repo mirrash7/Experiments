@@ -8,28 +8,32 @@ import { createSegmenter } from './segmenter.js';
 import { detectVictoryPose, pointsFromHero, pointsFromFrame, VICTORY_LABELS } from './victory.js';
 import { drawCard, normaliseStats, CARD_W, CARD_H } from './card.js';
 import { PALETTES } from './neon.js';
+import { heroScreenRect } from './mirror.js';
 
 const CSS = `
 .blcv-booth { position: fixed; inset: 0; pointer-events: none; z-index: 80; font-family: Inter, system-ui, sans-serif; color: #fff; }
 .blcv-booth[hidden] { display: none; }
-.blcv-prompt { position: absolute; left: 50%; top: 9%; transform: translateX(-50%); text-align: center; transition: opacity .25s; }
-.blcv-prompt b { display: block; white-space: nowrap; font-family: Bangers, Impact, sans-serif; font-weight: 400; font-size: clamp(28px, 4.4vw, 78px); letter-spacing: .04em;
-  color: #ffd36b; text-shadow: 0 0 24px rgba(255,160,60,.85), 0 4px 0 #2a0a48; transform: skewX(-8deg); }
-.blcv-prompt span { display: inline-block; margin-top: 6px; font-weight: 800; font-size: clamp(13px, 1.25vw, 20px); letter-spacing: .18em; color: #c9f7ff;
-  background: rgba(14,6,32,.55); padding: 6px 14px; border-radius: 999px; }
-.blcv-hold { position: absolute; left: 50%; top: 50%; width: min(26vh, 240px); height: min(26vh, 240px); transform: translate(-50%, -50%); opacity: 0; transition: opacity .2s; }
+.blcv-booth.blocked { display: none; }
+.blcv-prompt { position: absolute; left: 50%; top: 9%; transform: translateX(-50%); text-align: center; transition: opacity .25s; max-width: min(30vw, 520px);
+  background: rgba(14,6,32,.78); border: 1px solid rgba(255,211,107,.35); border-radius: 16px; padding: 10px 18px 9px; box-shadow: 0 6px 30px rgba(10,2,30,.5); }
+.blcv-prompt b { display: block; font-family: Bangers, Impact, sans-serif; font-weight: 400; font-size: clamp(20px, 2.3vw, 42px); line-height: 1.02; letter-spacing: .04em;
+  color: #ffd36b; text-shadow: 0 0 14px rgba(255,160,60,.6), 0 3px 0 #2a0a48; }
+.blcv-prompt span { display: block; margin-top: 4px; font-weight: 800; font-size: clamp(10px, .85vw, 15px); letter-spacing: .18em; color: #c9f7ff; }
+.blcv-prompt small { display: block; margin-top: 6px; font-weight: 600; font-size: clamp(9px, .72vw, 12px); letter-spacing: .04em; color: rgba(255,255,255,.7); }
+.blcv-hold { position: absolute; left: var(--blcv-sx, 50%); top: var(--blcv-sy, 50%); width: min(22vh, 210px); height: min(22vh, 210px); transform: translate(-50%, -50%); opacity: 0; transition: opacity .2s; }
 .blcv-hold svg { width: 100%; height: 100%; transform: rotate(-90deg); filter: drop-shadow(0 0 12px #ffd36b); }
 .blcv-hold i { position: absolute; inset: 0; display: grid; place-items: center; font-style: normal; font-family: Bangers, Impact, sans-serif; font-size: min(4.6vh, 42px);
   color: #fff; text-shadow: 0 0 16px #ff52d9; letter-spacing: .04em; text-align: center; }
-.blcv-count { position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%) scale(1); font-family: Bangers, Impact, sans-serif; font-size: min(42vh, 380px);
+.blcv-count { position: absolute; left: var(--blcv-sx, 50%); top: var(--blcv-sy, 46%); transform: translate(-50%, -50%) scale(1); font-family: Bangers, Impact, sans-serif; font-size: min(30vh, 270px);
   line-height: 1; color: #fff; text-shadow: 0 0 40px #ffb347, 0 0 90px #ff52d9, 0 8px 0 #2a0a48; opacity: 0; }
 .blcv-count.pop { animation: blcv-pop .8s cubic-bezier(.2,.9,.2,1) both; }
 @keyframes blcv-pop { 0% { opacity: 0; transform: translate(-50%,-50%) scale(1.8); } 25% { opacity: 1; transform: translate(-50%,-50%) scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(.85); } }
 .blcv-flash { position: absolute; inset: 0; background: #fff; opacity: 0; }
 .blcv-flash.go { animation: blcv-flash .7s ease-out both; }
-@keyframes blcv-flash { 0% { opacity: 1; } 100% { opacity: 0; } }
-.blcv-privacy { position: absolute; left: 50%; bottom: 3.2%; transform: translateX(-50%); font-size: clamp(11px, 1vw, 15px); font-weight: 600; letter-spacing: .06em;
-  color: rgba(255,255,255,.88); background: rgba(14,6,32,.6); padding: 7px 14px; border-radius: 999px; white-space: nowrap; }
+.blcv-booth.soft .blcv-flash.go { animation-name: blcv-flash-soft; }
+@keyframes blcv-flash { 0% { opacity: .85; } 100% { opacity: 0; } }
+@keyframes blcv-flash-soft { 0% { opacity: .22; } 100% { opacity: 0; } }
+
 .blcv-preview { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(8,3,20,.72); pointer-events: auto; opacity: 0; transition: opacity .35s; }
 .blcv-preview.show { opacity: 1; }
 .blcv-preview .blcv-panel { display: flex; gap: 3vw; align-items: center; }
@@ -63,19 +67,18 @@ export function createPhotoBooth({ video = null, renderer, heroScene, camera = n
   const card = document.createElement('canvas'); card.width = CARD_W; card.height = CARD_H;
   const cctx = card.getContext('2d');
   const listeners = new Set();
-  const st = { state: 'idle', held: 0, pose: null, poseLabel: '', count: 0, countT: 0, raf: 0, last: 0, resolve: null, blob: null, dataURL: null, url: null, timeoutAt: 0 };
+  const st = { blocked: false, reduceFlash: false, state: 'idle', held: 0, pose: null, poseLabel: '', count: 0, countT: 0, raf: 0, last: 0, resolve: null, blob: null, dataURL: null, url: null, timeoutAt: 0 };
   const pts = {};
 
   // ------------------------------------------------------------------------------------------- overlay DOM
   const overlay = document.createElement('div');
   overlay.className = 'blcv-booth'; overlay.hidden = true;
   overlay.innerHTML = `
-    <div class="blcv-prompt"><b>STRIKE YOUR VICTORY POSE</b><span>BOTH HANDS UP · V · FLEX</span></div>
+    <div class="blcv-prompt"><b>STRIKE YOUR VICTORY POSE</b><span>BOTH HANDS UP · V · FLEX</span><small class="blcv-privacy"></small></div>
     <div class="blcv-hold"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" fill="none" stroke="rgba(255,255,255,.18)" stroke-width="7"/>
       <circle class="blcv-ring" cx="50" cy="50" r="44" fill="none" stroke="#ffd36b" stroke-width="7" stroke-linecap="round" stroke-dasharray="276.5" stroke-dashoffset="276.5"/></svg><i></i></div>
     <div class="blcv-count"></div>
-    <div class="blcv-flash"></div>
-    <div class="blcv-privacy">Photo booth runs entirely on this device. Nothing is uploaded or stored.</div>`;
+    <div class="blcv-flash"></div>`;
   const $ = (s) => overlay.querySelector(s);
   const el = { prompt: $('.blcv-prompt'), hold: $('.blcv-hold'), ring: $('.blcv-ring'), holdLabel: $('.blcv-hold i'), count: $('.blcv-count'), flash: $('.blcv-flash'), privacy: $('.blcv-privacy') };
   let preview = null;
@@ -84,10 +87,27 @@ export function createPhotoBooth({ video = null, renderer, heroScene, camera = n
   function emit(blob, dataURL) { for (const cb of listeners) { try { cb(blob, dataURL); } catch (e) { console.warn('[cv] onCapture listener threw', e); } } }
 
   // ------------------------------------------------------------------------------------------- loop
+  /** Hold ring / countdown beside the hero (not on its chest): the side with more room, at chest height. */
+  function placeBeside() {
+    const cvs = renderer?.domElement;
+    if (!hero?.bones?.hips || !camera || !cvs) return;
+    const r = heroScreenRect(hero, camera, cvs);
+    if (!r || !(r.width > 0)) return;
+    const W = innerWidth, H = innerHeight;
+    const off = Math.max(W * 0.11, r.width * 0.5 + Math.min(H * 0.15, 150));
+    const cx = r.left + r.width / 2;
+    let x = cx > W / 2 ? r.left - off * 0.75 : r.left + r.width + off * 0.75;
+    x = Math.min(W * 0.66, Math.max(W * 0.34, x));   // stay in the centre lane (results panels sit at the sides)
+    const y = Math.min(H * 0.7, Math.max(H * 0.3, r.top + r.height * 0.3));
+    overlay.style.setProperty('--blcv-sx', `${x.toFixed(0)}px`); overlay.style.setProperty('--blcv-sy', `${y.toFixed(0)}px`);
+  }
+  let placeT = 0;
   function tick() {
     st.raf = requestAnimationFrame(tick);
     const now = performance.now();
     const dt = Math.min(0.1, (now - st.last) / 1000); st.last = now;
+    if (st.blocked) { if (st.timeoutAt) st.timeoutAt += dt * 1000; return; }   // paused (e.g. a replay is playing)
+    if ((placeT -= dt) <= 0) { placeT = 0.25; try { placeBeside(); } catch { /* */ } }
     if (st.state === 'armed') {
       const P = (getFrame && pointsFromFrame(getFrame())) || pointsFromHero(hero, pts);
       const v = detectVictoryPose(P, { handsUpHint: !!motion?.actions?.state?.handsUp });
@@ -121,6 +141,7 @@ export function createPhotoBooth({ video = null, renderer, heroScene, camera = n
 
   async function capture() {
     st.state = 'capturing';
+    overlay.classList.toggle('soft', st.reduceFlash);
     el.flash.classList.remove('go'); void el.flash.offsetWidth; el.flash.classList.add('go');
     try { onFlash?.(); } catch { /* */ }
     el.count.textContent = '';
@@ -167,6 +188,16 @@ export function createPhotoBooth({ video = null, renderer, heroScene, camera = n
   const api = {
     card, overlay,
     get state() { return st.state; },
+    /** True while the booth is on screen or working: armed (prompt), counting down, capturing, or the preview is open. */
+    get busy() { return st.state === 'armed' || st.state === 'countdown' || st.state === 'capturing' || !!preview; },
+    get blocked() { return st.blocked; },
+    /**
+     * Hide and pause the booth (detection, timeout and countdown freeze) without disarming, e.g. while a replay plays;
+     * setBlocked(false) resumes exactly where it was. Arming while blocked arms silently and shows on unblock.
+     */
+    setBlocked(on) { st.blocked = !!on; overlay.classList.toggle('blocked', st.blocked); st.last = performance.now(); },
+    /** Photosensitivity: a soft flash (22% instead of 85%) at capture. */
+    setReduceFlash(on) { st.reduceFlash = !!on; },
     get pose() { return st.pose; },
     get blob() { return st.blob; },
     get dataURL() { return st.dataURL; },
@@ -200,8 +231,9 @@ export function createPhotoBooth({ video = null, renderer, heroScene, camera = n
       const a = document.createElement('a'); a.href = st.url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
       return true;
     },
-    dispose() { api.disarm(); overlay.remove(); if (st.url) URL.revokeObjectURL(st.url); if (ownSeg) seg.dispose(); listeners.clear(); },
+    dispose() { api.disarm(); overlay.remove(); if (st.url) URL.revokeObjectURL(st.url); if (ownSeg) seg.dispose(); listeners.clear(); if (globalThis.__blcv?.booth === api) globalThis.__blcv.booth = null; },
   };
+  (globalThis.__blcv ||= {}).booth = api;   // console / automation handle
   return api;
 }
 

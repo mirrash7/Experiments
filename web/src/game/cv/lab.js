@@ -41,6 +41,7 @@ const CAMS = {
   gameplay: { pos: [0, 2.2, -4.2], look: [0, 1.5, 6] },
   sky: { pos: [0, 1.6, -5], look: [0, 6, 30] },
   front: { pos: [-1.15, 1.05, 3.6], look: [-1.15, 0.95, 0] },
+  boss: { pos: [-1.55, 2.05, -3.3], look: [1.6, 2.4, 12.0] },   // core/camera.js SHOTS.boss
 };
 let camName = 'gameplay';
 function setCam(n) { camName = n; const c = CAMS[n]; camera.position.set(...c.pos); camera.lookAt(new THREE.Vector3(...c.look)); }
@@ -58,15 +59,15 @@ const motion = await createMotionPipeline({ hero, options: { mirror: false, pred
 hero.fingersExternal = motion.options.hands !== 'off';
 ctx.hero = hero; ctx.motion = motion;
 
-let stage = null;
+let stage = null, vis = null;
 try {
   const { createVisuals } = await import('../visual/index.js');
-  const vis = await createVisuals(ctx);
+  vis = await createVisuals(ctx);
   stage = vis.stage; worldScene.add(stage.object); stage.setAct?.(1);
 } catch (e) { console.info('[cv-lab] stage unavailable, plain background', e?.message || e); }
 
 // ------------------------------------------------------------------------------------------ CV modules
-const mirror = createMirror({ video, renderer, scene: worldScene, camera, hero, quality: qMode === 'auto' ? 'high' : qMode, model: params.get('model') || 'pose-lite', echo: { position: new THREE.Vector3(0, 13, 74), height: 40 } });
+const mirror = createMirror({ video, renderer, scene: worldScene, camera, hero, quality: qMode === 'auto' ? 'high' : qMode, model: params.get('model') || 'pose-lite' });   // echo placed by preset ('run' at boot)
 $('calib').appendChild(mirror.canvas);
 const replayCanvasHost = $('replay');
 const demoStats = () => ({ score: 184250, rank: 'S', accuracy: 0.93, maxCombo: 87, body: { fastestPunch: 6.4, maxJumpCm: 31, bestReactionMs: 287, kcal: 41 }, timingMs: 38 });
@@ -199,6 +200,16 @@ for (const v of ['off', 'calibrate', 'echo', 'replay']) {
   const b = document.createElement('button'); b.textContent = v; b.dataset.v = v; b.onclick = () => setMode(v); $('modeBtns').appendChild(b);
 }
 $('od').onclick = () => { overdrive = !overdrive; refreshButtons(); };
+for (const v of mirror.echoPresets) {
+  const b = document.createElement('button'); b.textContent = `echo: ${v}`; b.dataset.v = v;
+  b.onclick = () => { if (v === 'boss') showBoss(true); else showBoss(false); mirror.setEchoPreset(v); for (const x of document.querySelectorAll('#presetBtns button')) x.classList.toggle('on', x === b); };
+  $('presetBtns').appendChild(b);
+}
+function showBoss(on) {
+  if (!vis?.boss) return false;
+  try { if (on) { vis.boss.object.visible = true; vis.boss.show?.(); } else vis.boss.hide?.(); } catch (e) { console.info('[cv-lab] boss', e?.message || e); }
+  return true;
+}
 $('pour').onclick = () => pour();
 $('framing').onclick = () => { const f = $('framing').textContent.endsWith('full') ? 'auto' : 'full'; mirror.setFraming(f); $('framing').textContent = `Framing: ${f}`; };
 $('rec').onclick = () => { recording = !recording; mirror.record(recording); $('rec').classList.toggle('on', recording); };
@@ -209,13 +220,14 @@ $('save').onclick = () => booth.download();
 $('hide').onclick = () => $('panel').classList.toggle('hidden');
 addEventListener('keydown', (e) => { if (e.key === 'u' || e.key === 'U') $('panel').classList.toggle('hidden'); });
 
-async function pour(duration = 1150) {
+async function pour(duration = 1500, timeScale = 1) {
   if (mirror.mode !== 'calibrate') setMode('calibrate');
   await new Promise((r) => setTimeout(r, 50));
   const rect = heroScreenRect(hero, camera, renderer.domElement);
-  await mirror.pourInto(rect, { duration });
+  $('calib').classList.add('pouring');
+  await mirror.pourInto(rect, { duration, timeScale });
   mirror.setMode('off');
-  $('calib').classList.remove('show');
+  $('calib').classList.remove('show', 'pouring');
   refreshButtons();
   return rect;
 }
@@ -248,6 +260,7 @@ function frame() {
   const m2 = performance.now();
   stageArgs.beat = beat; stageArgs.overdrive = overdrive;
   try { stage?.update(dt, stageArgs); } catch { /* */ }
+  try { if (vis?.boss?.object?.visible) vis.boss.update?.(dt); } catch { /* */ }
   const _hp = new THREE.Vector3(); hero.bones.hips.getWorldPosition(_hp);
   heroLights.update(camera, _hp.setY(_hp.y + 0.25));
   renderer.info.reset();
@@ -276,7 +289,9 @@ $('loading').remove();
 
 window.lab = {
   mirror, booth, hero, motion, video, THREE, camera,
-  setSource, setMode, pour, setCam,
+  setSource, setMode, pour, setCam, showBoss, vis,
+  echoPreset: (name, o) => { showBoss(name === 'boss'); if (name === 'boss') setCam('boss'); return mirror.setEchoPreset(name, o); },
+  echoRect: () => mirror.echo.measure(camera),
   overdrive(on = true) { overdrive = on; refreshButtons(); },
   replay: () => setMode('replay'),
   arm: (o) => booth.arm(o),

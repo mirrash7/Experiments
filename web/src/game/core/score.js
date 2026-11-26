@@ -44,7 +44,7 @@ export class Score {
     this.basePoints = 0; this.judged = 0;
     this.recent = [];                     // last 16 outcomes (1 hit / 0 miss) for adaptive density
     this.playTime = 0;
-    this.body = { fastestPunch: 0, maxJumpCm: 0, bestReactionMs: 0, moves: { punch: 0, kick: 0, jump: 0, squat: 0, dodge: 0, guard: 0, blast: 0, total: 0 }, kcal: 0 };
+    this.body = { fastestPunch: 0, punchSnap: 0, maxJumpCm: 0, bestReactionMs: 0, moves: { punch: 0, kick: 0, jump: 0, squat: 0, dodge: 0, guard: 0, blast: 0, total: 0 }, kcal: 0 };
     this.failed = false;
     this.bossDefeated = false;
     this.hitsSinceHeal = 0;
@@ -138,6 +138,9 @@ export class Score {
     m[kind]++; m.total++;
     this.body.kcal += KCAL[kind] ?? 0;
   }
+  /** Detector arm-extension rate (m/s) at a punch: an honest "punch snap", not fist speed. */
+  punchSnap(mps) { if (Number.isFinite(mps) && mps > 0 && mps < 20) this.body.punchSnap = Math.max(this.body.punchSnap, mps); }
+  /** Fastest punch: peak hero-space wrist speed (m/s) measured by the game at each punch. */
   punchSpeed(mps) { if (Number.isFinite(mps) && mps > 0 && mps < 20) this.body.fastestPunch = Math.max(this.body.fastestPunch, mps); }
   jumpHeight(cm) { if (Number.isFinite(cm) && cm > 0 && cm < 120) this.body.maxJumpCm = Math.max(this.body.maxJumpCm, cm); }
   reaction(ms) { if (Number.isFinite(ms) && ms > 80 && (!this.body.bestReactionMs || ms < this.body.bestReactionMs)) this.body.bestReactionMs = ms; }
@@ -155,7 +158,7 @@ export class Score {
         fastestPunch: b.fastestPunch, maxJumpCm: b.maxJumpCm, bestReactionMs: b.bestReactionMs || null,
         moves: b.moves.total, moveCounts: { ...b.moves }, kcal: b.kcal + base,
         // aliases (UI results cards)
-        punchSpeed: b.fastestPunch || null, jumpHeight: b.maxJumpCm || null, reactionMs: b.bestReactionMs || null,
+        punchSpeed: b.fastestPunch || null, punchSnap: b.punchSnap || null, jumpHeight: b.maxJumpCm || null, reactionMs: b.bestReactionMs || null,
         reactionTier: reactionTier(b.bestReactionMs),
       },
       playTime: this.playTime,

@@ -34,6 +34,21 @@
 //   show() (rest pose), so projectiles / blast targets built at boss start are correct.
 // - Boss scale ~2x angular (BOSS_POS 0,-9.8,118, scale 19.3): chest core ~5 deg, head ~20 deg above the horizon from
 //   the hero; the eclipse sits behind the head (palette 'boss' el 0.33).
+//
+// R2 additions (all additive; the createVisuals contract is unchanged):
+// - settings.reduceFlashes: VISUAL reads ctx.settings.reduceFlashes live every frame. On: flash sprites / blast / defeat
+//   flares are dimmed (x0.45), smaller and shorter, the beam is shorter (0.85 s) and VISUAL's camera shake drops to 35 %.
+// - Flash budget (P1-5): GlowPool caps every sprite bigger than 2.5 m (intensity <= 1.5, white core <= 0.3); halo cores
+//   saturate at 1.8x; blast beam / muzzle / impact and boss flashes are coloured, not white. No full-frame white-out
+//   even with CORE's bloom bump (lab emulates game.bloom: blast +0.55, defeat +1.0).
+// - Boss defeat: at 1.8 s the Warden shatters into ~44 large crystal chunks (one InstancedMesh, sampled from its own
+//   torso / head / arm geometry) that hold shape for a beat, split along gold-glowing cracks and tumble into the cloud
+//   sea with ember trails and cloud splashes; a ring spreads over the clouds (~4.4 s total; boss.state 'dying' ->
+//   'defeated' unchanged). Eyes: two emissive slits under a brow (cyan idle, red flare on telegraphs, dark on defeat).
+// - Stage: in the boss act the two platform sakura step aside to the platform rim (dissolve out/in), and tree islands
+//   within 60 m + near props dither out where they overlap the Warden's body (any camera, fight and kill). Act 2 is a
+//   moonlit blue night with magenta horizon accents; act 3 shifted violet. Painted toon canopies, toon waterfalls
+//   (flow tones, foam lip, mist). The screen-left front pillar moved out (80 deg) with no crystal over the HUD column.
 import * as THREE from 'three';
 import { GlowPool, ShardPool, qualityId } from './common.js';
 import { createStage, PALETTES, RIFT_POS } from './stage.js';
@@ -54,7 +69,14 @@ export async function createVisuals(ctx) {
 
   const shared = {
     time, worldFx, worldGlow, burstGlow, shards, palette: null,
-    trauma(x) { const fx = ctx.fx; if (fx && typeof fx.trauma === 'number' && fx.options?.shake !== false) fx.trauma = Math.min(1, fx.trauma + x); },
+    // settings.reduceFlashes (read live): flashK scales flash intensity / size / duration, shake drops to 35 %
+    flashK: 1, reduceFlashes: false,
+    trauma(x) { const fx = ctx.fx; if (fx && typeof fx.trauma === 'number' && fx.options?.shake !== false) fx.trauma = Math.min(1, fx.trauma + x * (shared.reduceFlashes ? 0.35 : 1)); },
+  };
+  const syncFlash = () => {
+    const r = !!ctx.settings?.reduceFlashes, f = r ? 0.45 : 1;
+    shared.reduceFlashes = r; shared.flashK = f;
+    worldGlow.flash = burstGlow.flash = f; vfxMod.glow.flash = f;   // only called from tick(), after vfxMod exists
   };
   const stage = createStage(ctx, shared);
   shared.palette = stage.palette;
@@ -83,7 +105,7 @@ export async function createVisuals(ctx) {
   let qid = qualityId(ctx.quality);
   stage.setQuality(qid);
   const clock0 = performance.now();
-  const tick = () => { time.value = (performance.now() - clock0) / 1000; };
+  const tick = () => { time.value = (performance.now() - clock0) / 1000; syncFlash(); };
   const checkQuality = () => { const q = qualityId(ctx.quality); if (q !== qid) { qid = q; stage.setQuality(q); } };
 
   // precompile every program once so the first spawn / blast doesn't hitch

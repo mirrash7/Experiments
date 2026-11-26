@@ -24,14 +24,16 @@
     #loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 14px; letter-spacing: 0.2em; color: #7ef9ff; pointer-events: none; }
     #srcVideo { position: fixed; right: 10px; bottom: 10px; width: 240px; border-radius: 8px; border: 1px solid rgba(255,255,255,.2); z-index: 20; transform: scaleX(-1); }
     /* calibration guide frame (what UI would own in the game) */
-    #calib { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(62vw, 960px); aspect-ratio: 16 / 9; z-index: 10; display: none;
-      border-radius: 18px; background: radial-gradient(ellipse at 50% 60%, rgba(40, 20, 80, 0.55), rgba(8, 4, 20, 0.75)); box-shadow: 0 0 0 2px rgba(126, 249, 255, .35), 0 0 60px rgba(90, 60, 255, .35); }
+    /* borderless: the hologram floats over the scene (no panel / debug-window chrome) */
+    #calib { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(62vw, 960px); aspect-ratio: 16 / 9; z-index: 10; display: none; }
     #calib.show { display: block; }
+    #calib .label { transition: opacity .2s; }
+    #calib.pouring .label { opacity: 0; }
     #calib canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
     #calib .label { position: absolute; left: 50%; bottom: -44px; transform: translateX(-50%); font: 400 30px Bangers, Impact, sans-serif; letter-spacing: .06em; color: #fff; text-shadow: 0 0 16px #7a5cff; white-space: nowrap; }
     /* results side-by-side */
     #replay { position: fixed; left: 4vw; top: 50%; transform: translateY(-50%); width: 40vw; aspect-ratio: 16 / 9; z-index: 10; display: none; border-radius: 16px;
-      background: rgba(8, 4, 20, 0.7); box-shadow: 0 0 0 2px rgba(255, 82, 217, .4); }
+      background: linear-gradient(rgba(8, 4, 20, 0.28), rgba(8, 4, 20, 0.12)); box-shadow: inset 0 0 0 1px rgba(255, 82, 217, .45); }
     #replay.show { display: block; }
     #replay canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
     #replay .label, #replayHero { position: absolute; font: 400 28px Bangers, Impact, sans-serif; letter-spacing: .06em; color: #fff; text-shadow: 0 0 14px #ff52d9; }
@@ -53,6 +55,7 @@
     <h2>Mirror mode</h2>
     <div class="row" id="modeBtns"></div>
     <div class="row" style="margin-top:4px"><button id="pour">Pour into hero</button><button id="od">Overdrive</button><button id="framing">Framing: full</button></div>
+    <div class="row" style="margin-top:4px" id="presetBtns"></div>
     <h2>Results replay</h2>
     <div class="row"><button id="rec" class="on">Recording</button><button id="play">Side-by-side replay</button></div>
     <h2>Photo booth</h2>

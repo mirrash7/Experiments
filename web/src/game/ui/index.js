@@ -30,10 +30,40 @@
 //   - cursor.enable('auto') (default): on whenever a [data-ui-button] is visible; cursor.setMode('body'|'project')
 //   - ui.replayOverlay = true: results() owns the replay letterbox and the mirror PiP (ctx.mirror.canvas, "YOU · 0.35×")
 //   - ui.dispose()
+//
+// Round 2 additions (all additive; CORE may call them or just emit the bus events the UI already listens to):
+//   - hud prompt plate sits BESIDE the hero (opposite the threat side: left punch / left kick / lean right -> plate on the
+//     right), or above the head, clamped to the safe area, never on the hero's projected bounds. prompt opts.side
+//     ('left'|'right') overrides the threat side derived from opts.move. hud.placePrompt(w, h, threat) is the placer.
+//     hud.state.lowSide ('left'|'right'|'above') / hud.state.lowClean (true = no overlap with the hero) for QA.
+//   - bus 'awaken' (UI listens): { phase: 'start' } shows the hand-cursor SKIP INTRO (right edge, dwell 1.6 s, calls
+//     ctx.game.skipAwaken(), else emits bus 'awaken:skip'); while it is shown, CORE's mouse-only .bl-awaken-skip is
+//     hidden by CSS (ui.root[data-awaken-ui]). { phase: 'wait', note } starts the wait clock; the skip button turns
+//     into a hand target after 5 s of waiting. { phase: 'coach', move, hint } -> coaching chip under the prompt
+//     (animated glyph + hint; if no 'coach' arrives by 5.5 s the UI shows a generic per-move hint itself).
+//     { phase: 'loose', move, hint?, text? } -> "ALMOST! ANY PUNCH WORKS" (per-move text, or text). { phase: 'auto' }
+//     -> "LET'S KEEP GOING!" for 1.6 s. { phase: 'resolved' } or the waiting note's .resolved or
+//     hud.prompt(null, { success }) clear the chip; { phase: 'end' } removes chip + button.
+//     Direct calls: hud.coach({ stage: 'coach'|'loose'|'auto', move, hint, text } | null), hud.awakenSkip(on, { hand })
+//   - bus 'knockdown' { health, max?, count } (UI listens) / hud.knockdown(d): red vignette, "GET BACK UP!" in the top
+//     lane (priority 2.5: above boss banners, below the distance warning), shake, staggered heart refill to d.health.
+//   - settings.reduceFlashes (bool): the UI drops its own flashing (warning banner strobe, Overdrive edge pulse, glyph
+//     glow strobe, knockdown shake) via .bl-ui.bl-reduce-flash; CORE / VISUAL / CV read the same flag for bloom & flashes.
+//   - screens.flashNotice({ onDone({ reduceFlashes }), onReduce?(on), reduce? }): photosensitivity notice (first boot).
+//     "OK, LET'S GO" (hand dwell 1.2 s / click / Enter) and a "REDUCE FLASHES" on/off toggle that writes
+//     settings.reduceFlashes and emits bus 'settings:change' { key: 'reduceFlashes' }. Handle: { node, reduce, finish() }.
+//   - screens.title(o) extras: o.onNewPlayer? (default ctx.game.newPlayer?.()) -> NEW PLAYER button (hand dwell 1.2 s,
+//     no punch-select); o.kiosk? (default settings.dev.kiosk || ctx.game.kiosk || ?kiosk=1) -> "KIOSK" badge.
+//   - screens.clearSpace(o): big diagram, 3 short bullets, auto-continue after holdS (default 4 s) framed well.
+//   - results: setPhotoCard() never prints "null"; while the stats show, the CV Photo Booth overlay is laid out around the
+//     panels (headline in the centre gap on a dark plate, countdown + hold ring beside the hero, privacy line above the
+//     buttons) through html.bl-booth-results + CSS vars (--bl-booth-cx/-w/-toast-b/-count-x/-count-y) in game.css.
+//   - settings rows: reduceFlashes (Off/On).
+//   - body.measureDistance boxes only head / shoulders / hips / ankles (wide hooks or T-poses no longer flag off-frame).
 import '../game.css';
 import { createCursor } from './cursor.js';
 import { createHUD } from './hud.js';
-import { createScreenHost, bootScreen, titleScreen, settingsScreen, clearSpaceScreen, pauseScreen, countdownOverlay, resultsScreen } from './screens.js';
+import { createScreenHost, bootScreen, titleScreen, settingsScreen, clearSpaceScreen, pauseScreen, countdownOverlay, resultsScreen, flashNoticeScreen } from './screens.js';
 import { calibrateScreen } from './calibrate.js';
 import { tutorialScreen } from './tutorial.js';
 import { h, freshFrame, measureDistance } from './body.js';
@@ -56,6 +86,7 @@ export function createUI(ctx) {
   const host = createScreenHost(root);
   const hud = createHUD(ctx, root);
   const cursor = createCursor(ctx, root);   // last: above screens + HUD
+  shared.heroBounds = hud.heroBounds;
 
   // PiP video also tells calibration the camera aspect
   const setVideo = hud.pip.setVideo;
@@ -69,6 +100,7 @@ export function createUI(ctx) {
 
   const screens = {
     boot: (o = {}) => show('boot', bootScreen(ctx, o)),
+    flashNotice: (o = {}) => show('flashNotice', flashNoticeScreen(ctx, o)),
     calibrate: (o = {}) => show('calibrate', calibrateScreen(ctx, shared, o)),
     clearSpace: (o = {}) => show('clearSpace', clearSpaceScreen(ctx, o)),
     title: (o = {}) => show('title', titleScreen(ctx, o)),
@@ -76,7 +108,7 @@ export function createUI(ctx) {
     settings: (o = {}) => show('settings', settingsScreen(ctx, { settings: o.settings || ctx.settings || {}, ...o })),
     pause: (o = {}) => show('pause', pauseScreen(ctx, o)),
     countdown: (n) => countdownOverlay(host.overlay, n),
-    results: (o = {}) => show('results', resultsScreen(ctx, o)),
+    results: (o = {}) => show('results', resultsScreen(ctx, o, shared)),
     hide: () => show(null, null),
     get current() { return host.name; },
   };

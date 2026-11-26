@@ -1,8 +1,9 @@
 // BREAKLIGHT CV: "Mirror Moment". Real-time person segmentation of the player's camera feed rendered as a neon
 // silhouette, used three ways:
 //   calibrate: the live silhouette canvas (`.canvas`) inside the T-pose guide, which pours into the hero on lock
-//              (`pourInto(screenRect)`);
-//   echo:      a giant translucent echo of the player behind the hero during Overdrive (`.object3d`, worldScene);
+//              (`pourInto(screenRect)`: a borderless particle stream into the hero's body, pour.js);
+//   echo:      a giant translucent hologram of the player in the sky during Overdrive (`.object3d`, worldScene), placed
+//              per game state with `setEchoPreset('run'|'boss'|'title'|'results')` clear of the boss / rift / hero;
 //   replay:    the recorded silhouette for the results side-by-side (`record(true)` during the run, then
 //              `playReplay({from, to, rate})` / `setReplayTime(perfMs)`).
 // Segmentation runs in a worker on its own cadence (segmenter.js); with no camera / no model it falls back to a skeleton
@@ -10,7 +11,8 @@
 import * as THREE from 'three';
 import { createSegmenter } from './segmenter.js';
 import { createStylizer } from './stylizer.js';
-import { createEcho } from './echo.js';
+import { createEcho, ECHO_PRESETS } from './echo.js';
+import { runPour, sampleSource, boxSource } from './pour.js';
 import { PALETTES } from './neon.js';
 
 const MODES = ['off', 'calibrate', 'echo', 'replay'];
@@ -29,8 +31,31 @@ export function createMirror({ video = null, renderer = null, scene = null, came
   echo: echoOpts = {}, model = 'pose-lite', segmenter = null, useWorker = true } = {}) {
   const seg = segmenter || createSegmenter({ video, quality, model, hero, useWorker });
   const sty = createStylizer({ width: canvasSize[0], height: canvasSize[1] });
-  const echo = createEcho(echoOpts);
+  const echo = createEcho({ preset: echoOpts.position && !echoOpts.preset ? null : echoOpts.preset || 'run', ...echoOpts });
   if (scene) scene.add(echo.object3d);
+  // automatic echo keep-outs: the Warden (visual/boss.js 'EclipseWarden'), the rift portal (visual/stage.js 'rift') and
+  // the hero (bones -> box, soft weight). Looked up by name in the world scene (cached; re-looked-up while missing).
+  const named = { boss: null, rift: null, at: -1e9 };
+  const heroBox = new THREE.Box3();
+  function heroKeepOut() {
+    const b = hero?.bones; if (!b?.hips) return null;
+    heroBox.makeEmpty();
+    for (const k of ['headTop', 'head', 'hips', 'leftHand', 'rightHand', 'leftFoot', 'rightFoot']) if (b[k]) { b[k].getWorldPosition(_v); heroBox.expandByPoint(_v); }
+    return heroBox.expandByScalar(0.15);
+  }
+  echo.setAutoKeepOut(() => {
+    const now = performance.now();
+    if (scene && (!named.boss || !named.rift) && now - named.at > 2000) {
+      named.at = now;
+      named.boss ||= scene.getObjectByName('EclipseWarden') || null;
+      named.rift ||= scene.getObjectByName('rift') || null;
+    }
+    const out = [];
+    if (named.boss) out.push({ obj: named.boss, weight: 1, tag: 'boss' });
+    if (named.rift) out.push({ obj: named.rift, weight: 1, tag: 'rift' });
+    if (hero) out.push({ obj: heroKeepOut, weight: 0.5, tag: 'hero' });
+    return out;
+  });
 
   const st = {
     mode: 'off', quality, time: 0, pulse: 0, lastBeat: -1, paletteName: 'calibrate', paletteOverride: null,
@@ -41,7 +66,9 @@ export function createMirror({ video = null, renderer = null, scene = null, came
     domMs: 0, echoMs: 0,
   };
   const echoPal = {};
-  const getEchoPal = (name, p) => (echoPal[name] ||= { a: new THREE.Color(p.a), b: new THREE.Color(p.b) });
+  // echo hologram: white-cyan outline (a) over a fresnel/gradient in the state colour (b) - the calibration look
+  const ECHO_EDGE = '#c9fbff';
+  const getEchoPal = (name, p, holo) => (echoPal[name + (holo ? ':h' : '')] ||= holo ? { a: new THREE.Color(ECHO_EDGE), b: new THREE.Color(name === 'overdrive' ? '#ffb43c' : p.a) } : { a: new THREE.Color(p.a), b: new THREE.Color(p.b) });
   const lowQ = () => st.quality === 'low';
 
   const liveMode = () => st.mode === 'calibrate' || st.mode === 'echo';
@@ -126,6 +153,19 @@ export function createMirror({ video = null, renderer = null, scene = null, came
     setHero(h) { hero = h; seg.setHero(h); },
     /** Feed every tracker frame (keypoints for the skeleton fallback). */
     setTrackerFrame(f) { seg.setTrackerFrame(f); },
+    /**
+     * Echo placement per game state: 'run' (acts 1-3: left/right sky clear of the rift), 'boss' (beside the Warden, or far
+     * behind it at low opacity if nothing beside it is clear), 'title', 'results'. o.keepOut: extra Object3D / Sphere /
+     * Box3 / Vector3 / {center, radius} regions to avoid (the Warden, the rift and the hero are avoided automatically);
+     * o.overrides: { h, top, depth, opacity, slots } tweaks. Re-solved from the live camera ~5x/s; always inside the frame.
+     */
+    setEchoPreset(name, o = {}) { echo.setPreset(name, o); return api.echoPlacement; },
+    /** Replace the explicit echo keep-out list (null clears; automatic boss / rift / hero keep-outs stay). */
+    setEchoKeepOut(list) { echo.setKeepOut(list); },
+    /** Last echo placement solve: { mode, preset, slot, scale, rect {x0,y0,x1,y1} (screen fractions), overlap, behind, depth, keepOut[] }. */
+    get echoPlacement() { return echo.placement; },
+    /** Preset names for setEchoPreset(). */
+    echoPresets: Object.keys(ECHO_PRESETS),
     /** Keep the segmenter running while the photo booth is armed (ref-counted). */
     hold(on) { st.boothHold = Math.max(0, st.boothHold + (on ? 1 : -1)); syncActive(); },
 
@@ -163,58 +203,49 @@ export function createMirror({ video = null, renderer = null, scene = null, came
       const crop = st.echoFraming === 'auto' ? autoCrop(st.echoCrop, frame, 0.95, dt, !st.echoCropInit) : { x: 0, y: 0, w: 1, h: 1 };
       if (frame) st.echoCropInit = true;
       const ghost = ghostFrame(frame);
-      echo.update(frame, { dt, camera, palette: getEchoPal(ename, pal), pulse: st.pulse, time: st.time, ghost: lowQ() ? null : ghost, ghostAmt: 0.9, crop });
+      echo.update(frame, { dt, camera, palette: getEchoPal(ename, pal, !st.paletteOverride), pulse: st.pulse, time: st.time, ghost: lowQ() ? null : ghost, ghostAmt: 0.9, crop });
       st.echoMs += (performance.now() - t1 - st.echoMs) * 0.1;
     },
 
     /**
-     * Calibration lock: the live silhouette canvas flies into `screenRect` ({left, top, width, height}, CSS px, e.g.
-     * heroScreenRect()) and melts into it. Resolves when done (the canvas is left hidden; call setMode('off')).
+     * Calibration lock: the silhouette dissolves into a borderless stream of light that arcs into the hero's on-screen
+     * body and ends in a flash on the hero (pour.js). screenRect ({left, top, width, height}, CSS px, e.g.
+     * heroScreenRect()) is the fallback target when the hero's bones aren't available. o.from: the element (canvas) or
+     * CSS rect that currently shows the silhouette; default: this.canvas if it is laid out, else the UI's calibration
+     * canvas ('.bl-sil-live'), else a centred box. o.onArrive(): called at the flash. Resolves when done (the canvas is
+     * left cleared; call setMode('off')).
      */
-    pourInto(screenRect, { duration = 1150, flash = true } = {}) {
+    pourInto(screenRect, { duration = 1500, flash = true, from = null, onArrive = null, timeScale = 1 } = {}) {
       const c = sty.canvas;
-      const r0 = c.getBoundingClientRect();
-      const frame = seg.frame;
       st.pouring = true;
-      const u = domUniforms(frame, { palette: PALETTES.locked, ghostAmt: 0 });
-      // where the person is inside the canvas (CSS px)
-      let px = r0.left, py = r0.top, pw = r0.width, ph = r0.height;
-      const b = frame?.bbox, cr = u.crop;
-      if (b && r0.width > 0) {
-        const ox0 = 1 - (b.x1 - cr[0]) / cr[2], ox1 = 1 - (b.x0 - cr[0]) / cr[2];   // mirrored
-        const oy0 = (b.y0 - cr[1]) / cr[3], oy1 = (b.y1 - cr[1]) / cr[3];
-        px = r0.left + ox0 * r0.width; pw = (ox1 - ox0) * r0.width; py = r0.top + oy0 * r0.height; ph = (oy1 - oy0) * r0.height;
+      // 1) one last silhouette draw (no ghost) so the particles inherit its exact current shape
+      const frame = seg.frame;
+      if (frame && st.mode === 'calibrate') sty.render(frame, domUniforms(frame, { ghostAmt: 0 }));
+      // 2) where is the silhouette on screen?
+      let srcEl = null, srcRect = null;
+      const laidOut = (el) => el && el.isConnected && (() => { const r = el.getBoundingClientRect(); return r.width > 4 && r.height > 4 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth ? r : null; })();
+      if (from && typeof from.getBoundingClientRect === 'function') { srcEl = from; srcRect = laidOut(from); }
+      else if (from && from.width) { srcEl = c; srcRect = from; }
+      if (!srcRect && laidOut(c)) { srcEl = c; srcRect = laidOut(c); }
+      if (!srcRect) { const ui = typeof document !== 'undefined' && document.querySelector('.bl-sil-live'); const r = laidOut(ui); if (r) { srcEl = ui; srcRect = r; } }
+      let sources = srcEl && srcRect ? sampleSource(srcEl, srcRect) : [];
+      if (sources.length < 40) {
+        // nothing visible to sample (canvas not in the DOM): the current silhouette in a centred guide-sized box
+        const h = innerHeight * 0.78, w = h * (c.width / c.height);
+        const R = { left: innerWidth / 2 - w / 2, top: innerHeight * 0.1, width: w, height: h };
+        sources = sampleSource(c, R);
+        if (sources.length < 40) sources = boxSource({ left: innerWidth / 2 - h * 0.18, top: innerHeight * 0.1, width: h * 0.36, height: h });
       }
-      const T = screenRect || { left: innerWidth / 2 - 100, top: innerHeight * 0.25, width: 200, height: innerHeight * 0.5 };
-      const s = ph > 1 ? T.height / ph : 1;
-      const dx = T.left + T.width / 2 - (px + pw / 2) * 1, dy = T.top + T.height / 2 - (py + ph / 2);
-      const prevTransform = c.style.transform, prevOrigin = c.style.transformOrigin, prevTransition = c.style.transition, prevOpacity = c.style.opacity;
-      c.style.transition = 'none';
-      c.style.transformOrigin = `${px + pw / 2 - r0.left}px ${py + ph / 2 - r0.top}px`;
-      const ease = (x) => x * x * (3 - 2 * x);
-      return new Promise((resolve) => {
-        const t0 = performance.now();
-        let flashed = false;
-        const step = () => {
-          const k = Math.min(1, (performance.now() - t0) / duration);
-          const k1 = Math.min(1, k / 0.3), k2 = Math.max(0, (k - 0.3) / 0.7);
-          const m = ease(k2) * ease(k2);
-          const sc = (1 + 0.06 * Math.sin(k1 * Math.PI)) * (1 + (s - 1) * m);
-          c.style.transform = `translate(${dx * m}px, ${dy * m}px) scale(${sc})`;
-          c.style.opacity = String(k > 0.85 ? 1 - (k - 0.85) / 0.15 : 1);
-          st.time += 1 / 60;
-          sty.render(seg.frame || frame, { ...u, time: st.time, pulse: 1 - k1 * 0.5, intensity: 1 + 0.6 * k1, pour: Math.max(0, k2 - 0.05) * 0.85 });
-          if (flash && !flashed && k > 0.82) { flashed = true; impactFlash(T); }
-          if (k < 1) requestAnimationFrame(step);
-          else {
-            st.pouring = false;
-            c.style.opacity = '0';
-            setTimeout(() => { c.style.transform = prevTransform; c.style.transformOrigin = prevOrigin; c.style.transition = prevTransition; c.style.opacity = prevOpacity; sty.clear(); }, 60);
-            resolve();
-          }
-        };
-        requestAnimationFrame(step);
-      });
+      // 3) hide the source silhouette (the particles replace it 1:1 on the first frame)
+      const prevOpacity = c.style.opacity, prevTransition = c.style.transition;
+      if (srcEl === c) { c.style.transition = 'opacity 120ms linear'; c.style.opacity = '0'; }
+      const canvas = renderer?.domElement || null;
+      return runPour({ sources, hero, camera, canvas, rect: screenRect, duration, flash, onArrive, timeScale }).then((r) => {
+        st.pouring = false;
+        sty.clear();
+        setTimeout(() => { c.style.opacity = prevOpacity; c.style.transition = prevTransition; }, 60);
+        return r;
+      }, (e) => { st.pouring = false; c.style.opacity = prevOpacity; c.style.transition = prevTransition; throw e; });
     },
 
     /** Start/stop recording small silhouette frames for the results replay (keeps segmentation running). */
@@ -236,24 +267,10 @@ export function createMirror({ video = null, renderer = null, scene = null, came
     setReplayTime(perfMs) { if (st.replay) { st.replay.t = perfMs; st.replay.ext = true; } },
     get replayProgress() { const R = st.replay; return R ? (R.t - R.from) / Math.max(1, R.to - R.from) : 0; },
 
-    dispose() { seg.dispose(); sty.dispose(); echo.object3d.parent?.remove(echo.object3d); echo.dispose(); },
+    dispose() { seg.dispose(); sty.dispose(); echo.object3d.parent?.remove(echo.object3d); echo.dispose(); if (globalThis.__blcv?.mirror === api) globalThis.__blcv.mirror = null; },
   };
+  (globalThis.__blcv ||= {}).mirror = api;   // console / automation handle (window.__blcv.mirror)
   return api;
-}
-
-/** A soft light ring at the pour target (DOM, self-removing). */
-function impactFlash(T) {
-  const d = document.createElement('div');
-  const size = Math.max(T.width, T.height) * 1.1;
-  Object.assign(d.style, {
-    position: 'fixed', left: `${T.left + T.width / 2 - size / 2}px`, top: `${T.top + T.height / 2 - size / 2}px`, width: `${size}px`, height: `${size}px`,
-    borderRadius: '50%', pointerEvents: 'none', zIndex: 60, mixBlendMode: 'screen',
-    background: 'radial-gradient(circle, rgba(255,246,214,0.95) 0%, rgba(255,190,90,0.55) 28%, rgba(120,240,255,0.25) 52%, rgba(0,0,0,0) 70%)',
-    transform: 'scale(0.2)', opacity: '1', transition: 'transform 520ms cubic-bezier(.2,.8,.2,1), opacity 620ms ease-out',
-  });
-  document.body.appendChild(d);
-  requestAnimationFrame(() => { d.style.transform = 'scale(1.4)'; d.style.opacity = '0'; });
-  setTimeout(() => d.remove(), 700);
 }
 
 /**

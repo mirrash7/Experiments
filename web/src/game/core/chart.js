@@ -18,61 +18,81 @@ const TOKENS = { SL: ['striker', 'left'], SR: ['striker', 'right'], CL: ['crawle
  * Per-act config: travel (beats from the rift to the hit point), telegraph lead (beats), phrases with difficulty 1..3.
  *   teach:  fixed phrases that ALWAYS open the act (whatever the seed / skill): they introduce the act's new mechanics.
  *   finale: every act ends on a Spirit Core (the Breaklight blast is the recurring payoff, not a 2-minute wait).
- * Phrase pools keep strikers well under half the notes; ActChart also caps the striker share (STRIKER_CAP).
+ *   npm:    density ceiling (notes / beat x 128 over the act, scaled down a little for a struggling player): pool notes
+ *           past it are dropped. The curve rises act by act (QA r2 P1-3): measured over the act's span that is
+ *           Act 1 ~30-34, Act 2 ~38-42, Act 3 ~44-48 notes / min for a player who hits most notes.
+ *   rest:   chance an over-cap note becomes a rest instead of another move (Act 1 is mostly strikes + rests).
+ *   demo:   the ~4-minute "Demo" length (kiosk default): fewer bars and a shorter teaching block (the Awakening
+ *           already taught every move).
+ * Phrase pools keep strikers under half the notes and kicks rare (screen-directed, tiring); ActChart caps both
+ * (STRIKER_CAP, KICK_CAP) and spreads over-cap notes across the act's other moves (see _convert).
  */
 export const ACTS = [
   { // ACT 1, amber dusk: strikes, then kicks, jumps and ducks are introduced
-    name: 'ACT 1', sub: 'Dusk Rising', bars: 26, travel: 4, tele: 2,
-    teach: ['SL . SR .', 'CL . . .', 'SR . SL .', 'CR . . .', 'J . . .', '. . . .', 'D . . .', '. . . .'],
+    name: 'ACT 1', sub: 'Dusk Rising', bars: 26, travel: 4, tele: 2, npm: 30, rest: 0.4,
+    teach: ['SL . SR .', 'CL . . .', 'SR . SL .', 'J . . .', 'SL . SR .', 'D . . .', 'SR . SL .', 'CR . . .'],
+    demo: { bars: 16, teach: ['SL . SR .', 'J . . .', 'SR . SL .', 'D . . .'] },
+    convert: ['scythe', 'crawler', 'sweep'],
     finale: ['O . . .', '. . . .'],
     phrases: [
-      { d: 1, bars: ['SL . . .', 'CR . . .'] },
-      { d: 1, bars: ['SR . . .', 'CL . . .'] },
       { d: 1, bars: ['SL . SR .', 'J . . .'] },
+      { d: 1, bars: ['SR . . .', 'D . . .'] },
+      { d: 1, bars: ['SL . . .', 'CR . . .'] },
+      { d: 2, bars: ['SL . SR .', '. . D .'] },
       { d: 2, bars: ['CL . . .', 'SR . SL? .'] },
+      { d: 2, bars: ['SR . SL .', 'J . . .'] },
       { d: 2, bars: ['D . . .', 'SL . SR? .'] },
-      { d: 2, bars: ['SR . . .', 'J . . .'] },
-      { d: 2, bars: ['CR . . .', 'D . . .'] },
-      { d: 3, bars: ['SL . SR .', 'CL . CR? .'] },
-      { d: 3, bars: ['J . . .', 'SL SR? CR .'] },
+      { d: 3, bars: ['SL . SR .', 'SL . J .'] },
+      { d: 3, bars: ['SR . SL .', 'D . SR? .'] },
+      { d: 3, bars: ['J . . SL', 'SR . D .'] },
     ],
   },
-  { // ACT 2, magenta: dodges and the first brute are introduced
-    name: 'ACT 2', sub: 'Crimson Tide', bars: 26, travel: 3.5, tele: 1.75,
-    teach: ['VL . . .', '. . . .', 'VR . . .', 'SL . SR .', 'B . . .', '. . . .', '. . . .', 'SL . SR .'],
+  { // ACT 2, magenta: dodges and the first brute are introduced; denser than Act 1 (off-beat jabs, dodge-counters)
+    name: 'ACT 2', sub: 'Crimson Tide', bars: 26, travel: 3.5, tele: 1.75, npm: 38, rest: 0.15,
+    teach: ['VL . . .', 'VR . SL .', 'SR . SL .', 'B . . .', '. . . .', 'VL . SR .'],
+    demo: { bars: 16, teach: ['VL . SR .', 'B . . .', '. . . .', 'VR . SL .'] },
+    convert: ['volley', 'scythe', 'sweep', 'crawler'],
     finale: ['O . . .', '. . . .'],
     phrases: [
-      { d: 1, bars: ['VL . . .', 'SR . . .'] },            // dodge left-side orb, counter right
-      { d: 1, bars: ['VR . . .', 'SL . . .'] },
-      { d: 1, bars: ['D . . .', 'SL . SR .'] },            // duck, then a double jab
-      { d: 2, bars: ['J . . .', 'CL . CR? .'] },           // jump, then kicks on landing
-      { d: 2, bars: ['B . . .', '. . . .'] },
-      { d: 2, bars: ['CL . . .', 'VR . . .'] },
-      { d: 2, bars: ['VL . VR? .', 'D . . .'] },
-      { d: 3, bars: ['VR . SL .', 'VL . SR .'] },
-      { d: 3, bars: ['SL SR? CL .', 'J . . .'] },
+      { d: 1, bars: ['VL . SR .', 'SL . SR .'] },          // dodge the left-side orb, counter right, double jab
+      { d: 1, bars: ['VR . SL .', 'D . . .'] },
+      { d: 1, bars: ['SL . SR .', 'J . . .'] },
+      { d: 2, bars: ['D . . SL', 'SR . SL? .'] },          // duck, then off-beat jabs
+      { d: 2, bars: ['J . . .', 'CL . SR .'] },            // jump, a kick on landing, counter
+      { d: 2, bars: ['VL . VR? .', 'SL SR . .'] },
+      { d: 2, bars: ['B . . .', '. SL . SR'] },
+      { d: 3, bars: ['VR . SL SR', 'VL . SR SL?'] },
+      { d: 3, bars: ['SL SR . D', '. . SL SR?'] },
+      { d: 3, bars: ['SL . SR SL', 'J . . VR?'] },
     ],
   },
   { // ACT 3, violet night: everything, eighth-note punch runs, a Spirit Core finale
-    name: 'ACT 3', sub: 'Violet Night', bars: 26, travel: 3, tele: 1.5,
+    name: 'ACT 3', sub: 'Violet Night', bars: 26, travel: 3, tele: 1.5, npm: 44, rest: 0.15,
     teach: ['SL . SR . VL . . .', 'D . . . CR . . .', 'B . . . . . . .', '. . . . J . . .'],
+    demo: { bars: 18, teach: ['SL . SR . VL . . .', 'B . . . . . . .', '. . . . J . . .'] },
+    convert: ['volley', 'scythe', 'sweep', 'crawler'],
     finale: ['O . . . . . . .', '. . . . . . . .'],
     phrases: [
       { d: 1, bars: ['SL . . . SR . . .', 'J . . . . . . .'] },
-      { d: 1, bars: ['VR . . . SL . . .', 'CR . . . . . . .'] },
-      { d: 2, bars: ['SL . SR . SL . SR? .', 'D . . . . . . .'] },
+      { d: 1, bars: ['VR . . . SL . . .', 'D . . . . . . .'] },
+      { d: 2, bars: ['SL . SR . SL . . .', 'VL . . . SR . . .'] },
       { d: 2, bars: ['VL . . . SR . SL .', 'D . . . . . . .'] },
-      { d: 2, bars: ['CL . . . CR . . .', 'VL . . . J . . .'] },
-      { d: 2, bars: ['B . . . . . . .', '. . . . . . . .'] },
-      { d: 3, bars: ['SL . SR . SL SR SL .', 'VR . . . VL . . .'] },
-      { d: 3, bars: ['D . . . CL . . .', '. . VR . . . J .'] },
-      { d: 3, bars: ['VR . SL SR VL . SR SL?', 'J . . . . . . .'] },
+      { d: 2, bars: ['CL . . . SR . SL .', 'J . . . . . . .'] },
+      { d: 2, bars: ['B . . . . . . .', '. . . . SL . SR .'] },
+      { d: 3, bars: ['SL . SR . SL SR . .', 'VR . . . J . . .'] },
+      { d: 3, bars: ['D . . . SL . SR .', 'VL . . . SR SL? . .'] },
+      { d: 3, bars: ['VR . SL . VL . SR .', 'J . . . . . . .'] },
     ],
   },
 ];
 
 /** Max share of strikers in an act (counted over the notes kept so far, from the 6th note on). */
 export const STRIKER_CAP = 0.45;
+/** Max share of kicks (crawlers) in an act: front kicks are aimed at the screen and are the most tiring move. */
+export const KICK_CAP = 0.2;
+/** Beats of calm before the boss (no notes; banner + groove), and the act-length key. */
+export const BREATHER_BEATS = 12;
+export const isDemo = (settings) => settings?.length === 'demo';
 
 /**
  * Act 0 "Awakening": the guided first minute, on the real music. Each section introduces one spirit type; the
@@ -185,7 +205,9 @@ export function upperOnly(n, flip, seated = false) {
  */
 export class ActChart {
   constructor({ act, startBeat, settings, seed = 1, out = [] }) {
-    this.cfg = ACTS[act];
+    const base = ACTS[act];
+    this.demo = isDemo(settings) && !!base.demo;
+    this.cfg = this.demo ? { ...base, ...base.demo } : base;
     this.act = act;
     this.startBeat = startBeat;                     // first bar of the act (notes start after a 1-bar lead-in)
     this.endBeat = startBeat + this.cfg.bars * 4;
@@ -200,7 +222,10 @@ export class ActChart {
     this.phraseIdx = 0;
     this.teachIdx = 0;                              // teach bars emitted so far
     this.strikers = 0;
+    this.types = {};                                // kept notes per type (variety rules)
+    this.converted = 0;
     this.upper = !!(settings.upperBodyOnly || settings.seated);
+    this.seated = !!settings.seated;
   }
   /** Beat the act's last note resolves (for transitions). */
   get lastBeat() { return this.last ? this.last.beat + (this.last.type === 'core' ? 8 : this.last.type === 'brute' ? 3 : 0) : this.cursor; }
@@ -252,17 +277,19 @@ export class ActChart {
   }
 
   _emit(bars, skill, fixed = false) {
+    this._skill = skill;
     const density = this.settings.adaptive ? Math.min(1, Math.max(0.15, 0.2 + skill * 0.9)) : 0.75;
     for (let b = 0; b < bars.length; b++) {
       for (const s of parseBar(bars[b])) {
         if (s.opt && this.rand() > density) continue;
         const n = { type: s.type, side: s.side, beat: this.cursor + b * 4 + s.at, opt: s.opt };
-        if (this.upper) { upperOnly(n, this.flip, !!this.settings.seated); this.flip = !this.flip; }
-        // striker cap: an optional striker over the cap is dropped, a fixed one becomes a lane-matched alternative
-        if (n.type === 'striker' && !fixed && this.count >= 5 && (this.strikers + 1) / (this.count + 1) > STRIKER_CAP) {
-          if (n.opt) continue;
-          if (!this.upper) n.type = 'crawler';
-          else { n.type = 'volley'; n.side = n.side === 'left' ? 'right' : 'left'; }
+        if (this.upper) { upperOnly(n, this.flip, this.seated); this.flip = !this.flip; }
+        // density ceiling (notes / min): pool notes past it are dropped (never the teaching block or the finale core)
+        if (!fixed && this.count >= this._allowed(n.beat)) continue;
+        // caps: an optional striker / kick over its cap is dropped, a fixed one is converted to another move of this
+        // act (spread by the variety rules, kicks never over KICK_CAP), or dropped when nothing fits
+        if (!fixed && this.count >= 5 && this._over(n.type)) {
+          if (n.opt || !this._convert(n)) continue;
         }
         // no eighth notes before act 3: snap to the beat
         if (this.act < 2) n.beat = Math.round(n.beat);
@@ -282,6 +309,44 @@ export class ActChart {
     this.cursor += bars.length * 4;
   }
 
+  /** Notes allowed up to `beat` by the act's density ceiling (cfg.npm notes / min at 128 bpm, plus a small slack). */
+  _allowed(beat) {
+    const npm = (this.cfg.npm ?? 60) * (0.82 + 0.18 * Math.min(1, Math.max(0, this._skill ?? 0.7) / 0.9));
+    return 3 + Math.max(0, beat - this.startBeat) * (npm / 128);
+  }
+  /** Would one more note of this type break its cap? */
+  _over(type) {
+    const c = this.count + 1;
+    if (type === 'striker') return (this.strikers + 1) / c > STRIKER_CAP;
+    if (type === 'crawler') return ((this.types.crawler || 0) + 1) / c > KICK_CAP;
+    return false;
+  }
+  /**
+   * Convert an over-cap note into another move of this act (cfg.convert, filtered for upper-body / seated play).
+   * Variety rules: never a type over its cap, never the same type as either of the last two kept notes, never a move
+   * the fairness rules reject right here; among the rest the least used type wins. Returns false when nothing fits.
+   */
+  _convert(n) {
+    let pool = this.cfg.convert ?? ['scythe', 'sweep'];
+    if (this.upper) pool = pool.filter((t) => t === 'volley' || (t === 'scythe' && !this.seated));
+    if (this.upper && !pool.includes('volley')) pool = [...pool, 'volley'];
+    const recent = [this.last?.type, this._prevType];
+    let best = null, bestUse = Infinity;
+    const side0 = n.side;
+    for (const t of pool) {
+      if (t === n.type || recent.includes(t) || this._over(t)) continue;
+      const cand = { ...n, type: t, side: t === 'volley' ? (side0 === 'left' ? 'right' : 'left') : t === 'crawler' ? side0 : 'center' };
+      if (this.act < 2) cand.beat = Math.round(cand.beat);
+      if (!fair(this.last, cand, this.act)) continue;
+      const use = (this.types[t] || 0) * (t === 'sweep' ? 1.6 : 1) + pool.indexOf(t) * 0.3 + this.rand() * 0.5;
+      if (use < bestUse) { bestUse = use; best = cand; }
+    }
+    if (!best || this.rand() < (this.cfg.rest ?? 0)) return false;
+    n.type = best.type; n.side = best.side; n.converted = true;
+    this.converted++;
+    return true;
+  }
+
   _push(n) {
     const c = this.cfg;
     n.id = 0; n.act = this.act;
@@ -290,8 +355,10 @@ export class ActChart {
     n.spawnBeat = n.beat - n.travel;
     n.move = MOVE_OF[n.type];
     if (n.type === 'core') n.hover = 8;
+    this._prevType = this.last?.type;
     this.last = n; this.count++;
     if (n.type === 'striker') this.strikers++;
+    this.types[n.type] = (this.types[n.type] || 0) + 1;
     this.out.push(n);
   }
 }

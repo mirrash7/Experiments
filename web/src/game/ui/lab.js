@@ -170,6 +170,12 @@ const bus = { on(t, cb) { (listeners[t] ||= new Set()).add(cb); return () => lis
 const settings = { tracker: 'demo', mode: 'showcase', seated: Q.get('seated') === '1', upperBodyOnly: Q.get('upper') === '1', difficulty: 'normal', volume: { master: 0.9, music: 0.8, sfx: 0.9 }, judgeOffsetMs: 0, quality: 'high', dev: { debug: Q.get('debug') === '1' } };
 const ctx = { THREE, renderer, camera, worldScene: scene, heroScene: scene, hero: null, motion: null, fx: null, audio, quality: { preset: 'high' }, settings, bus, time: { now: 0, dt: 0, beat: 0, act: 0 } };
 
+// a tiny CORE stand-in for the round-2 hooks (skip the Awakening, new player)
+ctx.game = {
+  skipAwaken() { lab.events.push({ name: 'skipAwaken', t: Math.round(performance.now()) }); awakenSim.stop(); bus.emit('awaken', { phase: 'end', completed: false }); },
+  newPlayer() { lab.events.push({ name: 'newPlayer', t: Math.round(performance.now()) }); },
+  kiosk: Q.get('kiosk') === '1',
+};
 const lab = { ctx, sfxLog, ready: false, errors: [] };
 window.lab = lab;
 
@@ -198,7 +204,7 @@ if (camDev) ui.hud.pip.setVideo(camDev.video);
 const log = (...a) => { lab.lastEvent = a.join(' '); renderInfo(); };
 lab.events = [];
 const ev = (name, data) => { lab.events.push({ name, data, t: Math.round(performance.now()) }); log(name, data ? JSON.stringify(data) : ''); };
-function hudOff() { ui.hud.show(false); hudDemo(false); }
+function hudOff() { ui.hud.show(false); hudDemo(false); awakenSim?.stop(); }
 const open = {
   boot: () => { hudOff(); setCam('orbit'); return ui.screens.boot({ current: settings.tracker, onTracker: (t) => { ev('tracker', t); settings.tracker = t; scr.setStatus?.(t === 'demo' ? 'Starting the demo player…' : 'Waiting for camera permission…', 'wait'); } }); },
   calibrate: () => { hudOff(); setCam('front'); return ui.screens.calibrate({ silhouetteCanvas: lab.mirror ? fakeSil.canvas : null, onDone: (r) => { ev('calibrated', r); go('title'); } }); },
@@ -219,7 +225,26 @@ const open = {
   results: () => { hudOff(); setCam('front'); const r = ui.screens.results({ stats: fakeStats(), onReplay: () => { ev('replay'); simReplay(); }, onAgain: () => { ev('again'); go('countdown'); }, onTitle: () => { ev('title'); go('title'); } }); setTimeout(simReplay, 1200); return r; },
   resultsPlain: () => { hudOff(); setCam('front'); return ui.screens.results({ stats: fakeStats({ newBest: false, best: 201400, replay: null, body: { punchSpeed: 5.1, jumpHeight: 0, reactionMs: null, moves: 96, kcal: 18 } }), onAgain: () => go('countdown'), onTitle: () => go('title') }); },
   hide: () => { hudOff(); return ui.screens.hide(); },
+  flashNotice: () => { hudOff(); setCam('orbit'); return ui.screens.flashNotice({ onReduce: (on) => ev('reduceFlashes', on), onDone: (r) => { ev('flashNotice', r); go('title'); } }); },
+  awaken: () => { ui.screens.hide(); setCam('gameplay'); ui.hud.show(true); hudDemo(false); ui.hud.setHealth(5, 5); awakenSim.start(); return null; },
 };
+// Act 0 simulation: what CORE emits while a spirit waits (wait -> coach 5 s -> loose 10 s -> auto 15 s)
+const awakenSim = {
+  timers: [],
+  stop() { this.timers.forEach(clearTimeout); this.timers = []; },
+  start({ scale = 1, move = 'punchLeft' } = {}) {
+    this.stop();
+    const note = { type: move.startsWith('kick') ? 'crawler' : 'striker', side: /Left$/.test(move) ? 'left' : 'right', resolved: false };
+    const T = (ms, fn) => this.timers.push(setTimeout(fn, ms * scale));
+    bus.emit('awaken', { phase: 'start' });
+    ui.hud.banner('AWAKENING', 'YOUR BODY IS THE CONTROLLER');
+    T(400, () => { ui.hud.prompt(/Left$/.test(move) ? 'LEFT PUNCH' : 'RIGHT PUNCH', { move, wait: true, kicker: 'AWAKENING · 1 / 7', sub: 'Punch the orange spirits' }); bus.emit('awaken', { phase: 'wait', note }); });
+    T(5400, () => bus.emit('awaken', { phase: 'coach', move, hint: 'Snap your fist straight out, then pull it back' }));
+    T(10400, () => bus.emit('awaken', { phase: 'loose', move }));
+    T(15400, () => { note.resolved = true; bus.emit('awaken', { phase: 'auto', move }); ui.hud.prompt(null, { success: 'GOOD!' }); });
+  },
+};
+lab.awakenSim = awakenSim;
 let scr = null;
 function go(name) { scr = open[name]?.() ?? null; lab.screen = name; autoBot(); renderInfo(); return scr; }
 lab.go = go;
@@ -242,6 +267,26 @@ function simReplay(seconds = 5) {
   }, 100);
 }
 lab.simReplay = simReplay;
+// CV Photo Booth overlay stand-in (same DOM / classes / CSS as cv/photobooth.js) for the results layout checks
+function boothSim() {
+  let ov = document.querySelector('.blcv-booth');
+  if (!ov) {
+    const st = document.createElement('style');
+    st.textContent = `.blcv-booth{position:fixed;inset:0;pointer-events:none;z-index:80;font-family:Inter,system-ui,sans-serif;color:#fff}
+.blcv-prompt{position:absolute;left:50%;top:9%;transform:translateX(-50%);text-align:center}
+.blcv-prompt b{display:block;white-space:nowrap;font-family:Bangers,Impact,sans-serif;font-weight:400;font-size:clamp(28px,4.4vw,78px);letter-spacing:.04em;color:#ffd36b;text-shadow:0 0 24px rgba(255,160,60,.85),0 4px 0 #2a0a48;transform:skewX(-8deg)}
+.blcv-prompt span{display:inline-block;margin-top:6px;font-weight:800;font-size:clamp(13px,1.25vw,20px);letter-spacing:.18em;color:#c9f7ff;background:rgba(14,6,32,.55);padding:6px 14px;border-radius:999px}
+.blcv-hold{position:absolute;left:50%;top:50%;width:min(26vh,240px);height:min(26vh,240px);transform:translate(-50%,-50%);border:7px solid #ffd36b;border-radius:50%}
+.blcv-count{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);font-family:Bangers,Impact,sans-serif;font-size:min(42vh,380px);line-height:1;color:#fff;text-shadow:0 0 40px #ffb347,0 0 90px #ff52d9,0 8px 0 #2a0a48}
+.blcv-privacy{position:absolute;left:50%;bottom:3.2%;transform:translateX(-50%);font-size:clamp(11px,1vw,15px);font-weight:600;letter-spacing:.06em;color:rgba(255,255,255,.88);background:rgba(14,6,32,.6);padding:7px 14px;border-radius:999px;white-space:nowrap}`;
+    document.head.append(st);
+    ov = document.createElement('div'); ov.className = 'blcv-booth';
+    ov.innerHTML = '<div class="blcv-prompt"><b>STRIKE YOUR VICTORY POSE</b><span>BOTH HANDS UP · V · FLEX</span></div><div class="blcv-hold"></div><div class="blcv-count">3</div><div class="blcv-privacy">Photo booth runs entirely on this device. Nothing is uploaded or stored.</div>';
+    document.body.append(ov);
+  } else ov.remove();
+  scr?.setPhotoCard?.({ pending: true });
+}
+lab.boothSim = boothSim;
 // fake "Mirror Moment" silhouette (stands in for the CV team's segmentation canvas): a soft body mask from kp2d
 const fakeSil = { canvas: document.createElement('canvas') };
 fakeSil.canvas.width = 480; fakeSil.canvas.height = 270;
@@ -387,7 +432,12 @@ const H = (t) => { const e = document.createElement('h4'); e.textContent = t; re
 const info = document.createElement('pre');
 const title = H('UI lab ▾'); title.onclick = () => panel.classList.toggle('min');
 panel.append(title,
-  H('Screens'), row(...['boot', 'clearSpace', 'calibrate', 'title', 'tutorial', 'settings', 'pause', 'pauseUser', 'countdown', 'hud', 'results', 'hide'].map((n) => B(n, () => go(n)))),
+  H('Screens'), row(...['boot', 'flashNotice', 'clearSpace', 'calibrate', 'title', 'tutorial', 'settings', 'pause', 'pauseUser', 'countdown', 'hud', 'results', 'hide'].map((n) => B(n, () => go(n)))),
+  H('Round 2'), row(B('flashNotice', () => go('flashNotice')), B('awaken', () => go('awaken')), B('awaken fast', () => { go('awaken'); awakenSim.start({ scale: 0.25 }); }),
+    B('knockdown', () => { ui.hud.setHealth(0, 5); setTimeout(() => bus.emit('knockdown', { health: 3, count: 1 }), 300); }),
+    B('reduceFx', (e) => { settings.reduceFlashes = !settings.reduceFlashes; e.target.classList.toggle('on', settings.reduceFlashes); }),
+    B('promptL', () => ui.hud.prompt('LEFT KICK!', { move: 'kickLeft' })), B('promptR', () => ui.hud.prompt('RIGHT PUNCH NOW!', { move: 'punchRight', tone: 'warn' })), B('promptJ', () => ui.hud.prompt('JUMP!', { move: 'jump' })),
+    B('booth', () => boothSim())),
   H('HUD tests'), row(B('banner', () => ui.hud.banner('WARNING', 'ECLIPSE WARDEN APPROACHES')), B('prompt', () => ui.hud.prompt(ui.hud.state.prompt ? null : 'JUMP!')),
     B('perfect', () => ui.hud.judgement(heroScreenPos('right'), 'perfect', { errMs: 12 })), B('miss', () => ui.hud.judgement(heroScreenPos('left'), 'miss')),
     B('overdrive', () => ui.hud.setFlow(1, !ui.hud.state.overdrive)), B('hurt', () => ui.hud.setHealth(Math.max(0, (ui.hud.state.health || 5) - 1), 5)),

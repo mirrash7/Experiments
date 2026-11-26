@@ -138,6 +138,7 @@ async function loadWorld() {
   contact = createContactShadow();
   worldScene.add(contact.mesh);
   game.setHero(hero); game.setMotion(motion);
+  game.applyFlashSetting();          // settings.reduceFlashes -> fx impact flashes off
   // UI (needs ctx.hero + ctx.motion for the hand cursor)
   const uiMod = await realModule('ui');
   try { ui = uiMod?.createUI?.(ctx) ?? null; } catch (e) { console.warn('[boot] createUI failed, using the plain DOM stand-in', e); }
@@ -159,6 +160,7 @@ async function loadWorld() {
   ctx.visuals = visuals;
   if (visuals.stage.object && !visuals.stage.object.parent) worldScene.add(visuals.stage.object);
   await loadCV();
+  game.applyFlashSetting();          // and the Photo Booth's flash (booth.setReduceFlash)
   try { visuals.boss?.hide?.(); } catch { /* */ }
   visualsReady = true;
   bootStatus?.('Ready', 'ready');
@@ -315,8 +317,10 @@ try {
 const kind = await trackerPicked;
 bootStatus?.('Starting the tracker…');
 await startTracker(kind);
-ready = true;
 const skip = dev.skip;
+// photosensitivity notice before the first calibration (first boot; each player in kiosk mode; never for autoplay)
+if (!skip) { try { await game.flashNotice(); } catch (e) { console.warn('[boot] flash notice', e); } }
+ready = true;
 if (skip === 'title') game.setState('title');
 else if (skip === 'run') { unlock(); game.setState('run', { act: dev.act || 0 }); }
 else if (skip === 'boss') { unlock(); game.setState('boss'); }
@@ -342,6 +346,7 @@ addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && (game.state === 'run' || game.state === 'boss')) game.setState('pause', { reason: 'manual' });
   if (e.key === 'Enter' && game.state === 'title') game.play();
   if (e.key === 'Enter' && game.state === 'calibrate') { motion.calibrate(); game.setState('title'); }
+  if ((e.key === 'n' || e.key === 'N') && (game.state === 'title' || game.state === 'results')) game.newPlayer();
 });
 
 // results intro replay: a click / tap skips to the stats
@@ -354,5 +359,6 @@ window.bl = {
   setState: (s, o) => game.setState(s, o),
   snapshot: () => game.snapshot(),
   results: () => game.lastResults,
+  newPlayer: (o) => game.newPlayer(o),
   perf: () => ({ ...perf, hist: undefined, fps: perf.fps }),
 };

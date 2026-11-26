@@ -17,14 +17,32 @@ export const kpIsSelfie = (frame) => frame?.source === 'synthetic';
 export const selfieX = (frame, x) => (kpIsSelfie(frame) ? x : 1 - x);
 
 const BOUNDS = { minX: 0, maxX: 0, minY: 0, maxY: 0, n: 0 };
-/** Bounding box of the confident 2D keypoints (selfie view). Reuses one object. */
-export function kpBounds(frame, minC = 0.45) {
+// torso + head + feet keypoints per tracker layout (wrists / hands excluded so a wide hook or a T-pose never reads as
+// "off-frame"): MediaPipe 33 landmarks, InstantHMR's 70-joint layout (sources/hmrSource.js I), synthetic = joint-name order
+const CORE_NAMES = ['nose', 'leftShoulder', 'rightShoulder', 'leftHip', 'rightHip', 'leftAnkle', 'rightAnkle', 'leftHeel', 'rightHeel'];
+const CORE_IDX = { mediapipe: [0, 11, 12, 23, 24, 27, 28, 29, 30], hmr: [0, 5, 6, 9, 10, 13, 14, 17, 20] };
+function coreIndices(frame) {
+  const kp = frame.kp2d;
+  if (frame.source === 'mediapipe' && kp.length >= 31) return CORE_IDX.mediapipe;
+  if (frame.source === 'hmr' && kp.length >= 21) return CORE_IDX.hmr;
+  if (frame.source === 'synthetic' && frame.joints) {
+    const names = Object.keys(frame.joints);
+    if (names.length !== kp.length) return null;
+    const idx = CORE_NAMES.map((n) => names.indexOf(n)).filter((i) => i >= 0);
+    return idx.length >= 5 ? idx : null;
+  }
+  return null;
+}
+/** Bounding box of the confident 2D keypoints (selfie view). Reuses one object. coreOnly: head / torso / feet only. */
+export function kpBounds(frame, minC = 0.45, coreOnly = false) {
   const kp = frame?.kp2d;
   BOUNDS.n = 0;
   if (!kp || !kp.length) return BOUNDS;
+  const idx = coreOnly ? coreIndices(frame) : null;
+  const N = idx ? idx.length : kp.length;
   let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, n = 0;
-  for (let i = 0; i < kp.length; i++) {
-    const p = kp[i];
+  for (let k = 0; k < N; k++) {
+    const p = kp[idx ? idx[k] : k];
     if (!p || (p.c ?? 1) < minC) continue;
     const x = selfieX(frame, p.x);
     if (x < x0) x0 = x; if (x > x1) x1 = x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; n++;
@@ -40,16 +58,18 @@ export function kpBounds(frame, minC = 0.45) {
  */
 export function measureDistance(frame, { upperBodyOnly = false } = {}) {
   if (!frame) return null;
-  const b = kpBounds(frame);
+  const b = kpBounds(frame, 0.45, true);
   if (b.n < 5) return null;
   const c = frame.conf || {};
-  const h = b.maxY - b.minY, cx = (b.minX + b.maxX) / 2;
+  const cx = (b.minX + b.maxX) / 2;
   const feet = Math.min(c.leftAnkle ?? 1, c.rightAnkle ?? 1);
   if (cx < 0.28 || b.minX < 0.005) return 'off-left';
   if (cx > 0.72 || b.maxX > 0.995) return 'off-right';
-  if (!upperBodyOnly && (feet < 0.35 || b.maxY > 0.985 || h > 0.93)) return 'too-close';
-  if (upperBodyOnly && (b.minY < 0.005 || h > 0.97)) return 'too-close';
-  if (h < (upperBodyOnly ? 0.25 : 0.4)) return 'too-far';
+  // the nose sits ~0.06 frame below the top of the head: extend the box upwards for the size / clip tests
+  const top = b.minY - 0.06;
+  if (!upperBodyOnly && (feet < 0.35 || b.maxY > 0.985 || b.maxY - top > 0.93 || top < -0.03)) return 'too-close';
+  if (upperBodyOnly && (top < -0.01 || b.maxY - top > 0.97)) return 'too-close';
+  if (b.maxY - top < (upperBodyOnly ? 0.25 : 0.4)) return 'too-far';
   return null;
 }
 

@@ -103,7 +103,7 @@ void main(){
   vec3 c;
   if (uMode < 0.5) {                                  // white-hot core
     float n = vnoise(vec2(vUv.x * 12.0, vDist * 0.5 - uTime * 40.0));
-    c = vec3(1.0, 0.97, 0.9) * (pow(ndv, 3.0) * 2.2 + smoothstep(0.65, 0.9, n) * 0.5 * ndv) + uColor * 0.2 * ndv;
+    c = mix(vec3(1.0, 0.97, 0.9), uColor, 0.22) * (pow(ndv, 3.0) * 1.7 + smoothstep(0.65, 0.9, n) * 0.4 * ndv) + uColor * 0.2 * ndv;
   } else {                                            // coloured sheath with streaming streaks
     float n = vnoise(vec2(vUv.x * 9.0 + uTime * 0.5, vDist * 0.22 - uTime * 26.0));
     float streak = smoothstep(0.45, 0.8, n);
@@ -117,17 +117,17 @@ void main(){ vUv = position.xy * 2.0;
   float ph = fract(uTime * 1.6 + iPhase);
   float z = 0.4 + ph * min(uLen, 26.0);
   float r = uR * (0.85 + ph * 1.1);
-  vA = (1.0 - ph) * smoothstep(0.0, 0.08, ph) * uI * 0.6;
+  vA = (1.0 - ph) * smoothstep(0.0, 0.08, ph) * uI * 0.45;
   vec3 p = vec3(position.xy * 2.0 * r, z);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`;
 const BRING_FRAG = /* glsl */`uniform vec3 uColor; varying vec2 vUv; varying float vA;
 void main(){ float r = length(vUv); float ring = smoothstep(0.1, 0.0, abs(r - 0.82)) + smoothstep(0.03, 0.0, abs(r - 0.92)) * 0.6;
-  if (ring < 0.01) discard; gl_FragColor = vec4((uColor * 1.2 + vec3(0.6)) * ring * vA, 1.0); }`;
+  if (ring < 0.01) discard; gl_FragColor = vec4((uColor * 1.0 + vec3(0.22)) * ring * vA, 1.0); }`;
 const SHOCK_FRAG = /* glsl */`uniform vec3 uColor; uniform float uP; varying vec2 vUv;
 void main(){ vec2 p = vUv * 2.0 - 1.0; float r = length(p); float w = 0.05 + 0.1 * (1.0 - uP);
   float ring = smoothstep(w, 0.0, abs(r - uP)) ; float fill = smoothstep(uP, 0.0, r) * 0.25 * (1.0 - uP);
   float a = (ring * 1.8 + fill) * (1.0 - uP);
-  gl_FragColor = vec4((uColor * 1.6 + vec3(1.0) * ring * (1.0 - uP)) * a, 1.0); }`;
+  gl_FragColor = vec4((uColor * 1.4 + vec3(0.35) * ring * (1.0 - uP)) * a, 1.0); }`;
 const DOME_FRAG = /* glsl */`uniform vec3 uColor; uniform float uP; varying vec3 vN; varying vec3 vV;
 void main(){ float ndv = abs(dot(normalize(vN), normalize(vV))); float a = pow(1.0 - ndv, 3.0) * (1.0 - uP) * (1.0 - uP) * 0.9; gl_FragColor = vec4(uColor * a, 1.0); }`;
 const DOME_VERT = /* glsl */`varying vec3 vN; varying vec3 vV; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = -mv.xyz; vN = normalMatrix * normal; gl_Position = projectionMatrix * mv; }`;
@@ -219,8 +219,8 @@ export function createVfx(ctx, shared) {
   const ringMat = new THREE.ShaderMaterial({ vertexShader: BRING_VERT, fragmentShader: BRING_FRAG, side: THREE.DoubleSide, ...add(),
     uniforms: { uColor: { value: new THREE.Color('#ffd070') }, uTime: time, uLen: { value: 100 }, uR: { value: 1 }, uI: { value: 1 } } });
   const beamRings = new THREE.Mesh(ringGeo, ringMat); beamRings.frustumCulled = false; beamRings.renderOrder = 23; blast.add(beamRings);
-  const muzzle = halo({ color: '#ffb040', core: '#ffffff', intensity: 2, coreSize: 0.3, rays: 0.6, time }); muzzle.renderOrder = 24; blast.add(muzzle);
-  const impact = halo({ color: '#ffb040', core: '#ffffff', intensity: 2, coreSize: 0.28, rays: 1, time }); impact.renderOrder = 24; impact.visible = false; group.add(impact);
+  const muzzle = halo({ color: '#ffb040', core: '#ffe8b8', intensity: 2, coreSize: 0.3, rays: 0.6, time }); muzzle.renderOrder = 24; blast.add(muzzle);
+  const impact = halo({ color: '#ff9a30', core: '#ffe2a8', intensity: 2, coreSize: 0.22, rays: 1, time }); impact.renderOrder = 24; impact.visible = false; group.add(impact);
   const discRing = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({ vertexShader: PLANE_VERT, fragmentShader: SHOCK_FRAG, side: THREE.DoubleSide, ...add(),
     uniforms: { uColor: { value: new THREE.Color('#ffc050') }, uP: { value: 1 } } }));
   discRing.renderOrder = 23; discRing.frustumCulled = false; blast.add(discRing);
@@ -274,6 +274,7 @@ export function createVfx(ctx, shared) {
   }
   function fireBlast(origin, dir, { length = null, radius = 0.62, color = null, target = null } = {}) {
     bl.origin.copy(origin); bl.dir.copy(dir).normalize(); bl.r = radius; bl.t = 0;
+    bl.dur = shared.reduceFlashes ? 0.85 : 1.15; bl.fk = shared.flashK ?? 1;
     let L = length;
     if (target) L = _v.subVectors(target, bl.origin).dot(bl.dir);
     if (L == null) L = findTarget(bl.origin, bl.dir);
@@ -286,9 +287,11 @@ export function createVfx(ctx, shared) {
     beamCore.material.uniforms.uLen.value = beamOuter.material.uniforms.uLen.value = ringMat.uniforms.uLen.value = bl.len;
     // muzzle burst
     const o = bl.origin;
-    glow.spawn(G.star, o.x, o.y, o.z, 0, 0, 0, 0.22, 0.3, 1.2, '#fff0c0', 3.0, 1, 0, 0, 0.3);
-    glow.spawn(G.ring, o.x, o.y, o.z, 0, 0, 0, 0.35, 0.2, 1.6, '#ffc050', 2.2, 0, 0, 0);
-    for (let i = 0; i < 26; i++) {
+    // R2 (P1-5): a coloured muzzle flare, not a white disc (it sits ~1 m from the side two-shot camera)
+    const fk = bl.fk;
+    glow.spawn(G.star, o.x, o.y, o.z, 0, 0, 0, 0.18, 0.2, 0.7 * (0.6 + 0.4 * fk), '#ffd890', 1.8 * fk, 0.45 * fk, 0, 0, 0.3);
+    glow.spawn(G.ring, o.x, o.y, o.z, 0, 0, 0, 0.3, 0.2, 1.0 * (0.6 + 0.4 * fk), '#ffb040', 1.4 * fk, 0, 0, 0);
+    for (let i = 0; i < Math.round(26 * (0.5 + 0.5 * fk)); i++) {
       const sp = 14 + Math.random() * 26;
       _v.set((Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5, 1).normalize();
       _v.applyQuaternion(blast.quaternion);
@@ -383,11 +386,11 @@ export function createVfx(ctx, shared) {
       const R = bl.r * r;
       beamCore.scale.set(R, R, L); beamOuter.scale.set(R, R, L);
       beamCore.material.uniforms.uLen.value = beamOuter.material.uniforms.uLen.value = ringMat.uniforms.uLen.value = Math.max(0.5, L);
-      const I = 1 + Math.max(0, 0.2 - t1) * 6;
+      const I = (1 + Math.max(0, 0.2 - t1) * 2.5) * (0.65 + 0.35 * (bl.fk ?? 1));
       beamCore.material.uniforms.uI.value = I; beamOuter.material.uniforms.uI.value = I * 0.85;
       ringMat.uniforms.uR.value = R * 1.1; ringMat.uniforms.uI.value = Math.min(1, r);
       muzzle.scale.setScalar(R * 0.8 + 0.2);
-      muzzle.material.uniforms.uIntensity.value = 1.5 + r;
+      muzzle.material.uniforms.uIntensity.value = (0.8 + 0.5 * r) * (bl.fk ?? 1);
       const p = Math.min(1, t1 / 0.5);
       discRing.scale.setScalar(0.4 + p * 2.4); discRing.material.uniforms.uP.value = p;
       discRing.position.set(0, 0, 0.6 + p * 2);
@@ -401,11 +404,13 @@ export function createVfx(ctx, shared) {
       const landed = grow >= 1 && t1 < d - 0.1;
       impact.visible = landed;
       if (landed) {
-        const dist = _cam.distanceTo(bl.end), k = Math.max(1.5, dist * 0.06) * (bl.hitTarget ? 1.4 : 0.8);
-        impact.position.copy(bl.end); impact.scale.setScalar(k * (2.2 + Math.sin(t1 * 40) * 0.25) * Math.min(1, r));
-        impact.material.uniforms.uIntensity.value = 2.2 * Math.min(1, r);
-        if (Math.random() < dt * 22) {
-          glow.spawn(Math.random() < 0.5 ? G.star : G.ring, bl.end.x, bl.end.y, bl.end.z, 0, 0, 0, 0.25, k * 0.3, k * 1.6, Math.random() < 0.5 ? '#fff2c0' : '#ffb040', 2.4, 1, 0, 0, Math.random() * 3);
+        // R2 (P1-5): impact flare sized ~4-6 % of the distance and kept coloured, so it reads as a hit, not a white-out
+        const fk = bl.fk ?? 1;
+        const dist = _cam.distanceTo(bl.end), k = Math.max(1.5, dist * 0.05) * (bl.hitTarget ? 1.2 : 0.8) * (0.6 + 0.4 * fk);
+        impact.position.copy(bl.end); impact.scale.setScalar(k * (1.5 + Math.sin(t1 * 40) * 0.2) * Math.min(1, r));
+        impact.material.uniforms.uIntensity.value = 1.3 * Math.min(1, r) * fk;
+        if (Math.random() < dt * 12 * fk) {
+          glow.spawn(Math.random() < 0.5 ? G.star : G.ring, bl.end.x, bl.end.y, bl.end.z, 0, 0, 0, 0.25, k * 0.25, k * 1.0, Math.random() < 0.5 ? '#ffd890' : '#ff9a40', 1.6, 0.4, 0, 0, Math.random() * 3);
           const th = Math.random() * Math.PI * 2, sp = k * 8;
           glow.spawn(G.streak, bl.end.x, bl.end.y, bl.end.z, Math.cos(th) * sp, Math.sin(th) * sp, -bl.dir.z * sp * 0.3, 0.35, k * 0.25, k * 0.08, '#ffe0a0', 2.4, 0.8, 1.5, 0, 0, 0, 6);
         }

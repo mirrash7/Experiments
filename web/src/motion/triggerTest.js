@@ -9,7 +9,7 @@
 // The second part (runRobustness, moveBench.js) runs every game move under realistic monocular noise.
 import { ActionDetector } from '../actions.js';
 import { SyntheticSource, SYN_PHASES } from '../sources/syntheticSource.js';
-import { runMoveBench, mergeBench, formatBench, benchFails } from './moveBench.js';
+import { runMoveBench, mergeBench, formatBench, benchFails, BENCH_MOVES, SEQ_MOVES, SEQ_UPPER } from './moveBench.js';
 
 const IMPULSES = ['punchLeft', 'punchRight', 'kickLeft', 'kickRight', 'jump'];
 
@@ -93,7 +93,32 @@ export function runRobustness({ Detector = ActionDetector, seeds = [1, 2, 3], re
   return { configs: out, all: mergeBench(Object.values(out)), fails, ok: fails.length === 0 };
 }
 
+// ------------------------------------------------------------------------------- sequences + knee strikes
+// BREAKLIGHT design QA r2: combos (dodge -> counter, duck -> jabs, jump -> kick, guard -> 3 punches, eighth-note punches,
+// kick -> punch) under every noise config, and the kneeStrike mode (knee strikes + every move, the sequences' kicks
+// replaced by knees). Same targets, per part kind.
+export const KNEE_CONFIGS = { mild: BENCH_CONFIGS.mild, mid: BENCH_CONFIGS.mid, harsh: BENCH_CONFIGS.harsh };
+export function runSequences({ Detector = ActionDetector, seeds = [1, 2, 3], reps = 24, configs = BENCH_CONFIGS } = {}) {
+  const out = {}, fails = [];
+  for (const [name, cfg] of Object.entries(configs)) {
+    const kinds = cfg.upperBody || cfg.seated ? SEQ_UPPER : SEQ_MOVES;
+    out[name] = mergeBench(seeds.map((seed) => runMoveBench({ Detector, reps, seed, kinds, ...cfg })));
+    for (const f of benchFails(out[name])) fails.push(`${name}: ${f}`);
+  }
+  return { configs: out, all: mergeBench(Object.values(out)), fails, ok: fails.length === 0 };
+}
+export function runKneeBench({ Detector = ActionDetector, seeds = [1, 2, 3], reps = 24, configs = KNEE_CONFIGS } = {}) {
+  const out = {}, fails = [];
+  const kinds = [...BENCH_MOVES, 'kneeLeft', 'kneeRight', 'jumpKick', 'kickPunch'];
+  for (const [name, cfg] of Object.entries(configs)) {
+    out[name] = mergeBench(seeds.map((seed) => runMoveBench({ Detector, reps, seed, kinds, kneeStrike: true, ...cfg })));
+    for (const f of benchFails(out[name])) fails.push(`${name}: ${f}`);
+  }
+  return { configs: out, all: mergeBench(Object.values(out)), fails, ok: fails.length === 0 };
+}
+
 // node entry point:  node web/src/motion/triggerTest.js [--quick] [--full] [--detector=path/to/actions.js]
+// (trigger test, robustness bench, sequence bench, kneeStrike bench; exits 1 if any fails)
 if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === new URL(process.argv[1], 'file://').href) {
   const args = process.argv.slice(2);
   const detPath = args.find((a) => a.startsWith('--detector='))?.slice(11);
@@ -111,5 +136,16 @@ if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === n
   }
   console.log('\n' + formatBench(rb.all, 'robustness, all configs'));
   console.log(rb.ok ? '\nrobustness PASS' : '\nrobustness FAIL: ' + rb.fails.join('; '));
-  process.exit(ok && rb.ok ? 0 : 1);
+  const seeds = args.includes('--quick') ? [1] : [1, 2, 3];
+  const sq = runSequences({ Detector, seeds });
+  for (const [name, r] of Object.entries(sq.configs)) console.log('\n' + formatBench(r, `[sequences ${name}]`));
+  console.log(sq.ok ? '\nsequences PASS' : '\nsequences FAIL: ' + sq.fails.join('; '));
+  const kn = runKneeBench({ Detector, seeds });
+  for (const [name, r] of Object.entries(kn.configs)) {
+    if (args.includes('--full')) console.log('\n' + formatBench(r, `[kneeStrike ${name}]`));
+    else console.log(`[kneeStrike ${name}]: ${r.phantomsPer100.toFixed(2)} phantoms/100 moves`);
+  }
+  console.log('\n' + formatBench(kn.all, 'kneeStrike mode, all configs'));
+  console.log(kn.ok ? '\nkneeStrike PASS' : '\nkneeStrike FAIL: ' + kn.fails.join('; '));
+  process.exit(ok && rb.ok && sq.ok && kn.ok ? 0 : 1);
 }

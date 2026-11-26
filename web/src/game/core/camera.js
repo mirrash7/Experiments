@@ -11,6 +11,11 @@
 //               the beam converging on the weak point.
 //   'bossKill'  low rear 3/4 two-shot: hero foreground left, Warden + defeat flash centre/right, sky clear at the top
 //               for the banner, slow push. Triggered automatically when a blast takes the boss to hp 0 (bus 'boss').
+//   'replayKill' the results replay of the boss kill (QA r2 P1-8 / art P2-6): first a low side 3/4 from the hero's
+//               left (hero large in profile on the right, arms and the push readable, the Warden on the left), slow push,
+//               then just before the kill a close rear 3/4 two-shot from the hero's left: hero large in the foreground,
+//               the Warden behind taking the beam. opts.killAt = kill time as a fraction of the clip (default 0.52).
+//               While the director is in 'replay' mode a 'bossKill' request is the same shot (VISUAL asks for it).
 //   'bossIntro' crane-up from the cloud sea over the hero's shoulder while the Warden rises, then a telephoto hold
 //               on its face.
 //   'frontCut'  short front glamour shot of the hero's face (3 variants, rotated). The director also schedules these
@@ -37,6 +42,7 @@ export const SHOTS = {
   bossIntro: { pos: [-1.45, 1.55, -3.4], look: [0, 3, 30], fov: 40 },
   frontCut: { pos: [0.95, 1.52, 2.05], look: [0.04, 1.4, 0], fov: 30 },
   replay: { pos: [0.6, 1.25, 3.0], look: [0, 1.0, 0.2], fov: 36 },
+  replayKill: { pos: [1.25, 1.2, 2.25], look: [0, 1.15, 0], fov: 34 },
 };
 
 // front glamour variants: camera offset from the hero's hips (x/z) / ground (y), aimed at the face; drift per second
@@ -48,7 +54,7 @@ const FRONT = [
 const FRONT_GAP = [20, 30];          // seconds between automatic front cuts
 const FRONT_DUR = 1.5;
 
-const DEFAULT_DUR = { blast: 1.7, bossKill: 5.2, bossIntro: 4.2, frontCut: FRONT_DUR };
+const DEFAULT_DUR = { blast: 1.7, bossKill: 5.2, bossIntro: 4.2, frontCut: FRONT_DUR, replayKill: 8.8 };
 const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3();
 const _q = new THREE.Vector3(), _f = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
@@ -122,10 +128,11 @@ export class CameraDirector {
    * opts: { target?: Vector3 (blast target), variant?: 0..2 (frontCut) }
    */
   cut(shot, dur, opts = {}) {
+    if (shot === 'bossKill' && (this.mode === 'replay' || this.shot === 'replayKill')) shot = 'replayKill';
     dur = dur ?? DEFAULT_DUR[shot] ?? 1.6;
     // the same shot requested again (e.g. auto bossKill + an explicit call): keep it running, extend
     if (shot === this.shot && this.shotT < 1) { this.shotLeft = Math.max(this.shotLeft, dur - this.shotT); this.shotDur = Math.max(this.shotDur, dur); return true; }
-    if (this.shot === 'bossKill' && shot === 'blast') return false;   // never interrupt the kill shot
+    if ((this.shot === 'bossKill' || this.shot === 'replayKill') && shot === 'blast') return false;   // never interrupt the kill shot
     if (shot === 'frontCut') {
       // never cover a required hit: shorten to end one beat before it, skip if that leaves too little
       const room = this._roomBeforeHit();
@@ -302,8 +309,36 @@ export class CameraDirector {
         const hp = _a.copy(head);
         const hh = _b.copy(hips);
         const [wp, bh] = this._bossAnchors();
-        this.goalPos.set((-1.3 + 0.25 * u) * k + hh.x * 0.5, (1.0 + 0.2 * smooth(u)) * k, (-2.7 + 0.45 * smooth(u)) * k + hh.z * 0.5);
-        this._frame([hp, hh, wp, bh], [0.9, 0.4, 1.4, 0.8], { minFov: 38, maxFov: 60, pad: 1.15 });
+        this.goalPos.set((-1.15 + 0.2 * u) * k + hh.x * 0.5, (1.0 + 0.2 * smooth(u)) * k, (-2.35 + 0.4 * smooth(u)) * k + hh.z * 0.5);
+        this._frame([hp, hh, wp, bh], [1.2, 0.55, 1.3, 0.7], { minFov: 38, maxFov: 60, pad: 1.12 });
+        return;
+      }
+      case 'replayKill': {
+        const [head, hips] = this._heroPoints();
+        const hp = _a.copy(head), hh = _b.copy(hips);
+        const killAt = Number.isFinite(this.shotOpts?.killAt) ? Math.min(0.9, Math.max(0.2, this.shotOpts.killAt)) : 0.52;
+        const split = Math.max(1.2, killAt * Math.max(0.5, dur - 0.5) - 0.7);
+        if (t < split) {
+          // low side 3/4 from the hero's left (~110 deg off the facing axis, camera at knee height looking up): the
+          // hero large on the right in profile, the Warden on the left; a slow push in. A front shot cannot hold the
+          // Warden (it stands at +Z, behind a front camera).
+          const u = smooth(t / split);
+          const [wp] = this._bossAnchors();
+          this.goalPos.set(hh.x + (2.3 - 0.15 * u) * k, (0.5 + 0.05 * u) * k, hh.z + (-0.9 + 0.15 * u) * k);
+          const chest = _d.lerpVectors(hh, hp, 0.6);
+          _q.copy(chest).sub(this.goalPos).normalize().multiplyScalar(0.62);
+          _f.copy(wp).sub(this.goalPos).normalize().multiplyScalar(0.38);
+          this.goalLook.copy(this.goalPos).addScaledVector(_q.add(_f).normalize(), 10);
+          this.goalFov = 58 - 3 * u;
+          this._setPhase('side');
+          return;
+        }
+        // close rear 3/4 two-shot: hero large in the foreground (left), the Warden behind taking the beam
+        const u = smooth((t - split) / Math.max(0.1, dur - split));
+        const [wp, bh] = this._bossAnchors();
+        this.goalPos.set(hh.x + (1.35 - 0.1 * u) * k, (1.0 + 0.18 * u) * k, hh.z + (-1.95 + 0.3 * u) * k);
+        this._frame([hp, hh, wp, bh], [1.5, 0.8, 1.0, 0.45], { minFov: 40, maxFov: 60, pad: 1.1 });
+        this._setPhase('two');
         return;
       }
       case 'bossIntro': {
