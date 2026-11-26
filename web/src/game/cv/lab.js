@@ -218,6 +218,9 @@ $('arm').onclick = () => booth.arm();
 $('fake').onclick = () => booth.trigger('vpose');
 $('save').onclick = () => booth.download();
 $('hide').onclick = () => $('panel').classList.toggle('hidden');
+function mockHud(on = true) { $('mockHud').classList.toggle('bl-hidden', !on); $('hudBtn').classList.toggle('on', on); mirror.echo.refreshScreenKeepOut(); return on; }
+$('hudBtn').onclick = () => mockHud($('mockHud').classList.contains('bl-hidden'));
+if (params.get('hud') === '1') mockHud(true);
 addEventListener('keydown', (e) => { if (e.key === 'u' || e.key === 'U') $('panel').classList.toggle('hidden'); });
 
 async function pour(duration = 1500, timeScale = 1) {
@@ -292,6 +295,14 @@ window.lab = {
   setSource, setMode, pour, setCam, showBoss, vis,
   echoPreset: (name, o) => { showBoss(name === 'boss'); if (name === 'boss') setCam('boss'); return mirror.setEchoPreset(name, o); },
   echoRect: () => mirror.echo.measure(camera),
+  mockHud,
+  /** Echo figure box this frame vs the HUD keep-outs: { figure, hud[], hits[] (HUD rects the figure overlaps), inFrame }. */
+  echoHudCheck() {
+    const P = mirror.echoPlacement, f = P.figure, hud = mirror.echoScreenKeepOut;
+    if (!f) return { placement: P };
+    const hits = hud.filter((r) => Math.min(f.x1, r.x1) > Math.max(f.x0, r.x0) && Math.min(f.y1, r.y1) > Math.max(f.y0, r.y0)).map((r) => r.tag);
+    return { figure: f, slot: P.slot, scale: P.scale, headroom: P.headroom, hud: hud.map((r) => ({ tag: r.tag, x0: +r.x0.toFixed(3), y0: +r.y0.toFixed(3), x1: +r.x1.toFixed(3), y1: +r.y1.toFixed(3) })), hits, inFrame: f.x0 >= 0.03 && f.x1 <= 0.97 && f.y0 >= 0.03 && f.y1 <= 0.97 };
+  },
   overdrive(on = true) { overdrive = on; refreshButtons(); },
   replay: () => setMode('replay'),
   arm: (o) => booth.arm(o),

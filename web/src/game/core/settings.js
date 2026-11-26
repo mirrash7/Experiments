@@ -159,7 +159,7 @@ export function loadSettings(params = new URLSearchParams(location.search)) {
     skip: p('skip') || null,
     seed: p('seed') ? +p('seed') : null,
     stub: p('stub') || '',
-    act: p('act') != null ? +p('act') : null,
+    act: p('act') != null && Number.isFinite(Number.parseInt(p('act'), 10)) ? Number.parseInt(p('act'), 10) : null,   // integers only (act=boss -> null)
     awaken: p('awaken'),                    // '1' force the Awakening intro, '0' skip it, null = first run only
     space: p('space'),                      // '0' skip the clear-space prompt
     notice: p('notice'),                    // '0' skip the photosensitivity notice

@@ -40,7 +40,8 @@ export function createScreenHost(root) {
       if (cur) {
         const old = cur; old.dispose?.();
         old.node.classList.add('is-leaving');
-        old.node.animate([{ opacity: 1 }, { opacity: 0, filter: 'blur(6px)', transform: 'scale(1.03)' }], { duration: 260, easing: 'ease-in' }).onfinish = () => old.node.remove();
+        // hide() (into gameplay / a replay): a quick 140 ms fade, so the HUD (which waits 170 ms) never overlaps it
+        old.node.animate([{ opacity: 1 }, { opacity: 0, filter: 'blur(6px)', transform: 'scale(1.03)' }], { duration: scr ? 260 : 140, easing: 'ease-in', fill: 'forwards' }).onfinish = () => old.node.remove();
       }
       cur = scr; curName = name;
       if (scr) {
@@ -263,11 +264,12 @@ export function settingsScreen(ctx, { settings = {}, onClose, onChange } = {}) {
 
 // ======================================================================================= clear-space check
 /**
- * clearSpace({ onDone({ skipped, auto, seated }), seated?, autoContinue = true, holdS = 4 }): a safety check before
+ * clearSpace({ onDone({ skipped, auto, seated, how }), seated?, holdS = 3, timeoutS = 0, kiosk? }): a safety check before
  * the T-pose / first run, readable at a glance: a big top-down 2 m x 2 m diagram (or the seated "arm's reach" variant),
- * three short bullets with pictograms and a live framing check; continues on "I'M CLEAR" (hand dwell / click) or
- * automatically (countdown ring) after the body has been framed well for holdS seconds. "PLAY SEATED / STANDING
- * INSTEAD" switches the variant; onDone reports it.
+ * three short bullets with pictograms and a live framing check. It needs an explicit confirmation (QA r3 design P2-3):
+ * "I'M CLEAR" (hand dwell / click / Enter) or holding still, whole body in frame, for holdS seconds (countdown ring).
+ * timeoutS > 0 (kiosk only, default 30 s there) is a last-resort fallback so an unattended stand never sticks.
+ * "PLAY SEATED / STANDING INSTEAD" switches the variant; onDone reports it.
  */
 const CS_DIAGRAM = {
   seated: `<svg viewBox="0 0 240 260" class="bl-cs-svg"><rect x="70" y="14" width="100" height="12" rx="3" class="cs-screen"/><circle cx="120" cy="20" r="3" class="cs-cam"/>
@@ -294,12 +296,16 @@ const CS_ICONS = {
   reach: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="4 3"/><circle cx="12" cy="12" r="2"/></svg>',
 };
 const CS_ITEM_ICONS = { seated: ['chair', 'reach', 'dist'], standing: ['zone', 'dist', 'feet'] };
-export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, holdS = 4 } = {}) {
+export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, holdS = 3, timeoutS, kiosk } = {}) {
+  const isKiosk = !!(kiosk ?? (ctx.settings?.kiosk || /[?&]kiosk=1\b/.test(location.search)));
+  timeoutS = timeoutS ?? (isKiosk ? 30 : 0);
   let isSeated = !!(seated ?? ctx.settings?.seated);
   const live = h('div', { class: 'bl-cs-live' }, h('i'), h('b', {}, 'LOOKING FOR YOU…'), h('span', {}, ''));
   const autoNum = h('b', {}, '');
   const auto = h('div', { class: 'bl-cs-auto' }, h('span', { class: 'bl-cs-ring', html: '<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17" class="cs-ring-bg"/><circle cx="20" cy="20" r="17" class="cs-ring" pathLength="100"/></svg>' }), autoNum);
-  const btn = uiButton("I'M CLEAR", () => finish(false, false), { cls: 'is-primary', icon: ICON.play, id: 'clear-ok' });
+  const autoLab = h('span', { class: 'bl-cs-auto-lab' }, 'or hold still in frame to confirm');
+  const timeoutEl = h('div', { class: 'bl-cs-timeout' }, '');
+  const btn = uiButton("I'M CLEAR", () => finish(false, false, 'button'), { cls: 'is-primary', icon: ICON.play, id: 'clear-ok' });
   btn.setAttribute('data-ui-dwell', '1.2'); btn.setAttribute('data-ui-nopunch', '');
   const swap = uiButton('', () => { isSeated = !isSeated; build(); good = 0; }, { cls: 'is-small', id: 'clear-seated' });
   swap.setAttribute('data-ui-dwell', '1.2'); swap.setAttribute('data-ui-nopunch', '');
@@ -312,7 +318,7 @@ export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, hol
   const node = h('div', { class: 'bl-cs' },
     h('div', { class: 'bl-panel bl-cs-panel' },
       diagram,
-      h('div', { class: 'bl-cs-copy' }, kicker, title, list, live, h('div', { class: 'bl-cs-actions' }, btn, auto), h('div', { class: 'bl-cs-swap' }, swap))),
+      h('div', { class: 'bl-cs-copy' }, kicker, title, list, live, h('div', { class: 'bl-cs-actions' }, btn, auto, autoLab), timeoutEl, h('div', { class: 'bl-cs-swap' }, swap))),
     h('div', { class: 'bl-calib-skip' }, skip));
   function build() {
     node.classList.toggle('is-seated', isSeated);
@@ -322,40 +328,86 @@ export function clearSpaceScreen(ctx, { onDone, seated, autoContinue = true, hol
     swap.querySelector('.bl-btn-label').firstChild.textContent = isSeated ? 'PLAY STANDING INSTEAD' : 'PLAY SEATED INSTEAD';
   }
   build();
-  let done = false, good = 0;
-  function finish(skipped, wasAuto) {
+  let done = false, good = 0, elapsed = 0, motionE = 0, prevKp = null;
+  function finish(skipped, wasAuto, how = skipped ? 'skip' : wasAuto ? 'timeout' : 'button') {
     if (done) return;
     done = true;
+    removeEventListener('keydown', onKey);
     try { ctx.audio?.sfx?.('uiSelect'); } catch { /* */ }
-    onDone?.({ skipped, auto: wasAuto, seated: isSeated });
+    onDone?.({ skipped, auto: wasAuto, seated: isSeated, how });
+  }
+  const onKey = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); finish(false, false, 'key'); } };
+  addEventListener('keydown', onKey);
+  /** Body motion: travel per second (in body heights) of the EMA-smoothed keypoints (tracker jitter is mostly
+   *  filtered out), itself smoothed. "Holding still" = below ~0.25 body heights / s. */
+  function stillness(f) {
+    const kp = f?.kp2d;
+    if (!kp || !kp.length) { prevKp = null; motionE = Infinity; return motionE; }
+    if (prevKp?.f === f) return motionE;
+    const t = f.tCapture ?? f.tArrive ?? performance.now();
+    if (!prevKp || prevKp.length !== kp.length) {
+      prevKp = kp.map((p) => (p ? { x: p.x, y: p.y } : null)); prevKp.f = f; prevKp.t = t; motionE = 1; return motionE;
+    }
+    let y0 = 1e9, y1 = -1e9, sum = 0, n = 0;
+    for (let i = 0; i < kp.length; i++) {
+      const p = kp[i], q = prevKp[i];
+      if (!p || !q || (p.c ?? 1) < 0.3) continue;
+      const nx = q.x + (p.x - q.x) * 0.3, ny = q.y + (p.y - q.y) * 0.3;
+      sum += Math.hypot(nx - q.x, ny - q.y); n++;
+      q.x = nx; q.y = ny;
+      if (ny < y0) y0 = ny; if (ny > y1) y1 = ny;
+    }
+    const fdt = Math.min(0.25, Math.max(1 / 120, (t - prevKp.t) / 1000));
+    prevKp.f = f; prevKp.t = t;
+    const sp = n ? sum / n / Math.max(0.05, y1 - y0) / fdt : 1;
+    motionE = Number.isFinite(motionE) ? motionE + (sp - motionE) * 0.25 : sp;
+    return motionE;
   }
   return {
     node,
     get seated() { return isSeated; },
-    finish: () => finish(false, false),
+    finish: () => finish(false, false, 'api'),
+    get stillFor() { return good; },
     update(dt) {
       if (done) return;
+      elapsed += dt;
       const f = freshFrame(ctx.motion, 700);
       const d = f ? measureDistance(f, { upperBodyOnly: isSeated || !!ctx.settings?.upperBodyOnly }) : null;
-      const ok = !!f && !d;
-      good = ok ? good + dt : 0;
+      const still = stillness(f) < 0.25;
+      const ok = !!f && !d && still;
+      good = ok ? good + dt : Math.max(0, good - dt * 2);
       const [ttl, sub, kind] = !f ? ['LOOKING FOR YOU…', 'Step in front of the camera', 'wait'] : d ? [DISTANCE_TEXT[d].title, DISTANCE_TEXT[d].sub, 'warn'] : [isSeated ? 'FRAMED WELL' : 'WHOLE BODY IN VIEW', 'Distance looks right', 'ok'];
       if (live.dataset.kind !== kind || live.children[1].textContent !== ttl) { live.dataset.kind = kind; live.children[1].textContent = ttl; live.children[2].textContent = sub; }
-      const showAuto = autoContinue && ok;
+      const showAuto = autoContinue && good > 0;
       auto.classList.toggle('is-on', showAuto);
+      autoLab.classList.toggle('is-on', showAuto);
+      const lab = showAuto ? 'HOLD STILL… confirming' : f && !d ? 'or hold still in frame to confirm' : 'or step into frame and hold still';
+      if (autoLab.textContent !== lab) autoLab.textContent = lab;
       if (showAuto) {
         const left = Math.max(0, holdS - good);
         const txt = String(Math.ceil(left));
         if (autoNum.textContent !== txt) autoNum.textContent = txt;
-        auto.style.setProperty('--k', (good / holdS).toFixed(3));
-        if (good >= holdS) finish(false, true);
+        auto.style.setProperty('--k', Math.min(1, good / holdS).toFixed(3));
+        if (good >= holdS) { finish(false, false, 'still'); return; }
       } else if (autoNum.textContent) { autoNum.textContent = ''; auto.style.setProperty('--k', 0); }
+      // kiosk only: a long fallback so an unattended stand never sticks here
+      if (timeoutS > 0) {
+        const left = timeoutS - elapsed;
+        const tt = left <= 10 ? `Continuing in ${Math.max(0, Math.ceil(left))} s` : '';
+        if (timeoutEl.textContent !== tt) timeoutEl.textContent = tt;
+        if (left <= 0) finish(false, true, 'timeout');
+      }
     },
+    dispose() { removeEventListener('keydown', onKey); },
   };
 }
 
 // ======================================================================================= pause
-export function pauseScreen(ctx, { reason = 'player-lost', onResume, onQuit } = {}) {
+/**
+ * pause({ reason, onResume?, onQuit?, onNewPlayer? }). Handle: setAbandon(secondsLeft | null, { kiosk }) shows the
+ * abandoned-run countdown ("STILL THERE? Step in to continue · 8") that CORE drives while nobody is tracked.
+ */
+export function pauseScreen(ctx, { reason = 'player-lost', onResume, onQuit, onNewPlayer } = {}) {
   const TXT = {
     'player-lost': ['STEP BACK INTO VIEW', 'We lost sight of you. Stand where your whole body fits in the camera.'],
     'tracking-lost': ['TRACKING LOST', 'The tracker stopped sending poses. Hold on, or check the camera / server.'],
@@ -368,6 +420,9 @@ export function pauseScreen(ctx, { reason = 'player-lost', onResume, onQuit } = 
   const btns = [];
   if (onResume) btns.push(uiButton('RESUME', onResume, { cls: 'is-primary', icon: ICON.play, id: 'pause-resume' }));
   if (onQuit) btns.push(uiButton('QUIT', onQuit, { icon: ICON.home, id: 'pause-quit' }));
+  if (onNewPlayer) { const b = uiButton('NEW PLAYER', onNewPlayer, { cls: 'is-small', icon: ICON.user, id: 'pause-new-player' }); b.setAttribute('data-ui-dwell', '1.2'); b.setAttribute('data-ui-nopunch', ''); btns.push(b); }
+  const abNum = h('em', {}, '');
+  const abandon = h('div', { class: 'bl-pause-abandon', role: 'status' }, h('b', {}, 'STILL THERE?'), h('span', {}, 'Step in to continue · ', abNum));
   const node = h('div', { class: 'bl-pause' + (reason === 'user' ? ' is-user' : '') },
     h('div', { class: 'bl-panel bl-pause-panel' },
       h('div', { class: 'bl-pause-kicker' }, 'PAUSED'),
@@ -375,10 +430,20 @@ export function pauseScreen(ctx, { reason = 'player-lost', onResume, onQuit } = 
       h('p', { class: 'bl-pause-sub' }, sub),
       h('div', { class: 'bl-pause-frame' }, cv, h('i', { class: 'bl-pause-box' }), live),
       h('p', { class: 'bl-pause-auto' }, 'The game resumes with a 3-2-1 countdown when you are back.'),
+      abandon,
       btns.length ? h('div', { class: 'bl-panel-foot' }, btns) : null));
-  let t = 0;
+  let t = 0, abKiosk = false;
   return {
     node,
+    /** Abandoned-run countdown: seconds left before the run ends (null hides it). */
+    setAbandon(secs, { kiosk = abKiosk } = {}) {
+      abKiosk = kiosk;
+      const on = Number.isFinite(secs);
+      abandon.classList.toggle('is-on', on);
+      if (!on) return;
+      const txt = `${kiosk ? 'new player in' : 'back to the title in'} ${Math.max(0, Math.ceil(secs))}`;
+      if (abNum.textContent !== txt) abNum.textContent = txt;
+    },
     update(dt) {
       t += dt;
       const W = cv.width, H = cv.height;
@@ -564,10 +629,48 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onS
     pipMedia.append(c);
     const sp = d.speed ?? R0.speed ?? 0.35;
     pipTag.lastChild.textContent = `YOU · ${(+sp).toFixed(2).replace(/0$/, '')}×`;
+    pip.querySelector('figcaption').textContent = 'your silhouette, same moment';
     node.classList.add('has-pip');
     node.classList.toggle('is-bosskill', !!(d.bossKill ?? R0.bossKill));
   }
+  // no recorded silhouette (no camera segmentation: demo / autoplay, CV off): the tracked 2D skeleton the replay was
+  // rebuilt from, same moment (ctx.game.replaySkeletonAt(songT), driven by the 3D replay's clock) - QA r3 art P2-2
+  let skel = null;
+  function adoptSkeleton(d = {}) {
+    const G = ctx.game;
+    if (adopted || skel || !d.skeleton || typeof G?.replaySkeletonAt !== 'function') return;
+    const c = h('canvas', { class: 'bl-cine-pip-skel', width: 300, height: 400, style: { position: 'absolute', inset: '0', width: '100%', height: '100%' } });
+    pipMedia.append(c);
+    skel = { c, g: c.getContext('2d'), box: null, w: d.window ?? null };
+    const sp = d.speed ?? R0.speed ?? 0.35;
+    pipTag.lastChild.textContent = `YOU · ${(+sp).toFixed(2).replace(/0$/, '')}×`;
+    pip.querySelector('figcaption').textContent = 'your tracked skeleton, same moment';
+    node.classList.add('has-pip');
+    node.classList.toggle('is-bosskill', !!(d.bossKill ?? R0.bossKill));
+  }
+  function drawSkel() {
+    const G = ctx.game, rp = G?.replay;
+    if (!skel) return;
+    const fr = rp?.active ? G.replaySkeletonAt(rp.t) : null;
+    node.classList.toggle('has-pip', !!fr);             // nothing to show (replay over / no frame): no empty box
+    const { c, g } = skel, W = c.width, H = c.height;
+    g.clearRect(0, 0, W, H);
+    const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, 'rgba(26,16,54,.92)'); gr.addColorStop(1, 'rgba(10,6,24,.92)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    if (!fr) return;
+    // a stable box: the union of the bounds seen so far (no breathing zoom)
+    const selfie = fr.source === 'synthetic';
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+    for (const p of fr.kp) { if (!p || p.c < 0.3) continue; const x = selfie ? p.x : 1 - p.x; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
+    if (!(x1 > x0)) return;
+    const b = skel.box ??= { x0, x1, y0, y1 };
+    b.x0 = Math.min(b.x0, x0); b.x1 = Math.max(b.x1, x1); b.y0 = Math.min(b.y0, y0); b.y1 = Math.max(b.y1, y1);
+    const bw = b.x1 - b.x0, bh = b.y1 - b.y0, sc = Math.min(W * 0.74 / bw, H * 0.62 / bh);
+    const ox = W / 2 - (b.x0 + bw / 2) * sc, oy = H * 0.5 - (b.y0 + bh / 2) * sc;
+    drawSkeleton(g, { source: fr.source }, fr.kp, fr.edges, (x, y) => [ox + x * sc, oy + y * sc], { width: 4, glow: 16 });
+  }
   function releaseMirror() {
+    if (skel) { skel.c.remove(); skel = null; node.classList.remove('has-pip'); }
     const a = adopted;
     if (!a) return;
     adopted = null;
@@ -606,7 +709,7 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onS
   }
   function onReplayEvent(d = {}) {
     const ty = d.type || d.phase || (d.on === true ? 'start' : d.on === false ? 'end' : Number.isFinite(d.progress) ? 'progress' : null);
-    if (ty === 'start') { showReplay(d); try { adoptMirror(d); } catch (e) { console.warn('[ui] replay pip', e); } }
+    if (ty === 'start') { showReplay(d); try { adoptMirror(d); adoptSkeleton(d); } catch (e) { console.warn('[ui] replay pip', e); } }
     else if (ty === 'progress') { if (phase !== 'replay' && !sawReplay) showReplay(d); prog = Math.max(0, Math.min(1, +d.progress || 0)); }
     else if (ty === 'end') { releaseMirror(); prog = 1; cineFill.style.transform = 'scaleX(1)'; setTimeout(() => showStats('end'), 350); }
   }
@@ -702,6 +805,7 @@ export function resultsScreen(ctx, { stats = {}, onReplay, onAgain, onTitle, onS
       else if (rp && phase === 'replay' && sawReplay && replayT > 0.5 && !rp.active && prog > 0.02) onReplayEvent({ type: 'end' });
       if (phase === 'replay') {
         replayT += dt;
+        drawSkel();
         cineFill.style.transform = `scaleX(${prog.toFixed(4)})`;
         node.classList.remove('is-pending');
         if (replayT > 30) showStats('timeout');

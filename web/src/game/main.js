@@ -20,6 +20,8 @@ import { Tracking } from './core/tracking.js';
 import { Game } from './core/game.js';
 import { AutoplaySource } from './core/autoplay.js';
 import { createDebugOverlay } from './core/debug.js';
+import { createRecorder, recordingRequested } from './record/recorder.js';
+import { SessionSource } from './record/sessionSource.js';
 
 const params = new URLSearchParams(location.search);
 const settings = loadSettings(params);
@@ -51,8 +53,17 @@ const resize = autoResize(renderer, camera, { pixelRatio: () => quality?.dpr ?? 
 const bus = createBus();
 const perf = { fps: 0, frameMs: 16.7, frameMax: 0, motionMs: 0, frames: 0, longFrames: 0, hist: new Float32Array(240), histI: 0 };
 
+/**
+ * Extension points for add-on modules (e.g. a playtest recorder) without touching the loop:
+ *   ctx.hooks.afterMotion.push((dt, hero, now) => ...)   after motion.update + game accents, before the replay / hero.update
+ *   ctx.hooks.frame.push((dt, now) => ...)               end of every frame, after the UI update, before rendering
+ *   ctx.hooks.trackerFrame.push((frame) => ...)          every tracker frame (before the motion pipeline's push)
+ *   ctx.hooks.ready.push((ctx) => ...)                   once, when the tracker has started and the game is live
+ * plus the bus events (state, judge, awaken, pause, resume, replay, ...).
+ */
+const hooks = { afterMotion: [], frame: [], trackerFrame: [], ready: [] };
 const ctx = {
-  THREE, renderer, camera, worldScene, heroScene,
+  THREE, renderer, camera, worldScene, heroScene, hooks,
   hero: null, motion: null, fx: null, audio: null, visuals: null, ui: null,
   quality: null, settings, bus, perf, post, heroLights,
   time: { now: 0, dt: 0, beat: 0, act: null },
@@ -138,6 +149,9 @@ async function loadWorld() {
   contact = createContactShadow();
   worldScene.add(contact.mesh);
   game.setHero(hero); game.setMotion(motion);
+  // playtest recorder (?record=1, docs/game/PLAYTEST.md): wraps motion.push / actions.pushFrame, so after setMotion
+  if (recordingRequested(params)) ctx.recorder = createRecorder({ motion, bus, game, source: () => tracking.source,
+    getMeta: () => ({ snap: game.snapshot(), tracker: tracking.kind, model: tracking.source?.model }) });
   game.applyFlashSetting();          // settings.reduceFlashes -> fx impact flashes off
   // UI (needs ctx.hero + ctx.motion for the hand cursor)
   const uiMod = await realModule('ui');
@@ -231,7 +245,10 @@ function makeBot({ skill, jitterMs, demo = false }) {
 }
 
 async function startTracker(kind) {
-  if (kind === 'autoplay' || kind === 'demo' || kind === 'synthetic') {
+  if (params.get('play')) {                      // replay a recorded playtest session (?play=<url>[&loop])
+    const s = await SessionSource.load(params.get('play'), { loop: params.has('loop') });
+    await tracking.start(s.kind, { custom: s, kind: s.kind === 'hmr' || s.kind === 'mediapipe' ? s.kind : 'demo' });
+  } else if (kind === 'autoplay' || kind === 'demo' || kind === 'synthetic') {
     const demo = kind !== 'autoplay';
     const bot = makeBot({
       demo,
@@ -251,6 +268,7 @@ async function startTracker(kind) {
   tracking.onFrame = (f) => {
     if (f.kp2d && f.kp2d.length) ui.hud.pip.setSkeleton(f.kp2d, f.edges, { selfie: tracking.kind === 'hmr' || tracking.kind === 'mediapipe' });
     if (ctx.mirror) { try { ctx.mirror.setTrackerFrame(f); } catch { /* */ } }
+    for (const fn of hooks.trackerFrame) { try { fn(f); } catch (e) { if (!fn._warned) { fn._warned = true; console.warn('[tracker] frame hook', e); } } }
   };
   console.info(`[boot] tracker: ${tracking.kind}${tracking.source?.model ? ' (' + tracking.source.model + ')' : ''}`);
 }
@@ -276,6 +294,8 @@ function frame() {
     if (ready) game.update(dt);
     const m0 = performance.now();
     motion.update(dt, now);                         // applies the pose unless the replay owns the hero
+    game.afterMotion(dt, hero);                     // procedural accents over the tracked pose (Breaklight push)
+    for (const fn of hooks.afterMotion) { try { fn(dt, hero, now); } catch (e) { if (!fn._warned) { fn._warned = true; console.warn('[loop] afterMotion hook', e); } } }
     if (game.replaying) game.replay.update(dt, hero);
     perf.motionMs += (performance.now() - m0 - perf.motionMs) * 0.05;
     hero.update(dt * fxScale * (game.replaying ? 0.4 : 1));
@@ -299,6 +319,7 @@ function frame() {
     director.update(dt, null);
   }
   ui?.update(dt);   // after motion.update (cursor + screen + HUD)
+  for (const fn of hooks.frame) { try { fn(dt, now); } catch (e) { if (!fn._warned) { fn._warned = true; console.warn('[loop] frame hook', e); } } }
   renderer.info.reset();
   if (hero?.materials?.updateFrame) hero.materials.updateFrame(camera, heroLights);
   post.render(dt);
@@ -321,6 +342,7 @@ const skip = dev.skip;
 // photosensitivity notice before the first calibration (first boot; each player in kiosk mode; never for autoplay)
 if (!skip) { try { await game.flashNotice(); } catch (e) { console.warn('[boot] flash notice', e); } }
 ready = true;
+for (const fn of hooks.ready) { try { fn(ctx); } catch (e) { console.warn('[boot] ready hook', e); } }
 if (skip === 'title') game.setState('title');
 else if (skip === 'run') { unlock(); game.setState('run', { act: dev.act || 0 }); }
 else if (skip === 'boss') { unlock(); game.setState('boss'); }
@@ -346,7 +368,7 @@ addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && (game.state === 'run' || game.state === 'boss')) game.setState('pause', { reason: 'manual' });
   if (e.key === 'Enter' && game.state === 'title') game.play();
   if (e.key === 'Enter' && game.state === 'calibrate') { motion.calibrate(); game.setState('title'); }
-  if ((e.key === 'n' || e.key === 'N') && (game.state === 'title' || game.state === 'results')) game.newPlayer();
+  if ((e.key === 'n' || e.key === 'N') && (game.state === 'title' || game.state === 'results' || game.state === 'pause')) game.newPlayer();
 });
 
 // results intro replay: a click / tap skips to the stats

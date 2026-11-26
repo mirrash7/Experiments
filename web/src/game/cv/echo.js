@@ -3,7 +3,7 @@
 // + HDR so the post chain's bloom picks up the outline. Fed by the segmenter's cutout (one small texture upload per new
 // mask frame), with a delayed ghost outline, a subtle beat pulse and a rising reveal when it turns on.
 //
-// Placement (QA art r2 P0-1): by default the echo is placed by a PRESET ('run' | 'boss' | 'title' | 'results'). A preset
+// Placement (QA art r2 P0-1, r3 P1-2): by default the echo is placed by a PRESET ('run' | 'boss' | 'title' | 'results'). A preset
 // is a list of candidate screen slots (left / right sky, scaled to the frame height); a few times a second the solver
 // projects the keep-out regions (boss bounds, the rift, the hero, any extra Object3D / Sphere / Box3 / {center, radius})
 // through the CURRENT camera and picks the slot with the least overlap that fits entirely inside the frame, shrinking it
@@ -27,27 +27,45 @@ ${NEON_UNIFORMS}
 ${HOLO_FUNCS}
 void main() {
   vec4 c = holoShade(vUv);
-  // fade the bottom into the cloud sea and the sides into the sky
-  float fade = smoothstep(0.0, 0.2, 1.0 - vUv.y) * smoothstep(0.0, 0.06, vUv.x) * smoothstep(0.0, 0.06, 1.0 - vUv.x);
+  // fade the bottom into the cloud sea and the sides / top into the sky (no hard quad edge when the hands reach the crop)
+  float fade = smoothstep(0.0, 0.2, 1.0 - vUv.y) * smoothstep(0.0, 0.035, vUv.y) * smoothstep(0.0, 0.06, vUv.x) * smoothstep(0.0, 0.06, 1.0 - vUv.x);
   float k = uOpacity * fade;
   outColor = vec4(c.rgb * k, c.a * k * uDim);
 }`;
 
 /**
- * Screen slots per preset. x: slot centre (0..1 from the left); top: top edge (0..1 from the top); h: height as a
- * fraction of the frame height; depth: metres from the camera. Earlier slots are preferred on ties. `behind`: fallback
- * placed past the furthest keep-out (boss preset), drawn at `behindOpacity`.
+ * Screen slots per preset (QA art r3 P1-2: the echo is placed and sized by its FIGURE, not its quad). x: figure centre
+ * (0..1 from the left); feet: the figure's feet line (0..1 from the top); fh: the STANDING figure height as a fraction of
+ * the frame height at scale 1 (raised arms make the figure taller than this: see ARMS_UP); depth: metres from the camera.
+ * Per-slot `feet` overrides the preset's. Earlier slots are preferred on ties. `behind`: fallback placed past the furthest
+ * keep-out (boss preset), drawn at `behindOpacity`. Legacy overrides { top, h } (quad top / height) are still accepted.
  */
 export const ECHO_PRESETS = {
-  run: { slots: [{ x: 0.21 }, { x: 0.79 }, { x: 0.27 }, { x: 0.73 }], top: 0.07, h: 0.6, depth: 92, opacity: 0.85 },
-  boss: { slots: [{ x: 0.17 }, { x: 0.83 }, { x: 0.12 }, { x: 0.88 }], top: 0.1, h: 0.6, depth: 70, opacity: 0.75, behind: true, behindOpacity: 0.35 },
-  title: { slots: [{ x: 0.78 }, { x: 0.22 }, { x: 0.5 }], top: 0.06, h: 0.62, depth: 90, opacity: 0.7 },
-  results: { slots: [{ x: 0.5 }, { x: 0.8 }, { x: 0.2 }], top: 0.05, h: 0.5, depth: 90, opacity: 0.55 },
+  run: { slots: [{ x: 0.21 }, { x: 0.79 }, { x: 0.27 }, { x: 0.73 }, { x: 0.33 }, { x: 0.67 }], feet: 0.66, fh: 0.42, depth: 92, opacity: 0.85 },
+  boss: { slots: [{ x: 0.17 }, { x: 0.83 }, { x: 0.12 }, { x: 0.88 }], feet: 0.64, fh: 0.44, depth: 70, opacity: 0.75, behind: true, behindOpacity: 0.35 },
+  title: { slots: [{ x: 0.78 }, { x: 0.22 }, { x: 0.5 }], feet: 0.62, fh: 0.46, depth: 90, opacity: 0.7 },
+  results: { slots: [{ x: 0.5 }, { x: 0.8 }, { x: 0.2 }], feet: 0.5, fh: 0.38, depth: 90, opacity: 0.55 },
 };
-const SCALES = [1, 0.86, 0.72, 0.6];
-const MARGIN = 0.035;          // frame margin (fraction)
-const BODY_W = 0.62;           // the body occupies ~this much of the quad's width (overlap tests use the body box)
+const SCALES = [1, 0.88, 0.76, 0.64, 0.54];
+const MARGIN = 0.035;          // safe-frame margin (fraction of the frame) on every side
+const HUD_GAP = 0.018;         // extra clearance below / beside a HUD rect (fraction of the frame height)
+const ARMS_UP = 1.3;           // headroom reserved above the standing figure for raised arms (x standing height)
+const FIG_PAD = 0.025;         // the neon outline + glow extend this far past the mask bbox (fraction of the quad)
 const FLOOR_Y = -2;            // world y below which keep-out geometry is ignored (hidden by the platform edge)
+
+/**
+ * Lowest y (fraction from the top) the figure's top may reach for a figure spanning [x0, x1] with its feet at `feet`:
+ * the safe-frame top, pushed down below every screen keep-out (HUD rect) that overlaps that column above the feet.
+ */
+export function topLimit(rects, x0, x1, feet) {
+  let lim = MARGIN;
+  for (const r of rects || []) {
+    if (r.x1 <= x0 - HUD_GAP * 0.5 || r.x0 >= x1 + HUD_GAP * 0.5) continue;   // not in this column
+    if (r.y0 >= feet) continue;                                               // entirely below the feet
+    lim = Math.max(lim, r.y1 + HUD_GAP);
+  }
+  return lim;
+}
 
 function makeTex() {
   const t = new THREE.Texture();
@@ -188,8 +206,10 @@ export function createEcho({ height = 36, position = new THREE.Vector3(0, 11, 74
   const P = {
     mode: preset ? 'preset' : 'world', preset: preset || 'run', overrides: {}, keepOut: null, autoKeepOut: null,
     solveIn: 0, snap: true, anchor: new THREE.Vector3(), anchorH: height, goal: new THREE.Vector3(), goalH: height,
-    opacityK: 1, goalOpacityK: 1, last: null,
+    opacityK: 1, goalOpacityK: 1, last: null, screenKeepOut: null, scr: [], scrAt: -1e9, fig: null,
   };
+  // pose extent inside the quad (fractions, mirrored) + standing reference (see trackFigure)
+  const F = { x0: 0.3, x1: 0.7, y0: 0.12, y1: 0.88, ref: 0.5, ratio: 1, init: false };
 
   function setImage(t, img, w, h, dims) {
     if (dims.w && (dims.w !== w || dims.h !== h)) t.dispose();   // immutable storage: re-allocate on resize
@@ -213,35 +233,79 @@ export function createEcho({ height = 36, position = new THREE.Vector3(0, 11, 74
     return list;
   }
 
+  /** Preset config with legacy { top, h } (quad) overrides mapped onto the figure fields. */
+  function presetCfg() {
+    const cfg = { ...(ECHO_PRESETS[P.preset] || ECHO_PRESETS.run), ...P.overrides };
+    if (P.overrides.h != null && P.overrides.fh == null) cfg.fh = P.overrides.h * 0.76;
+    if (P.overrides.top != null && P.overrides.feet == null) cfg.feet = (P.overrides.top ?? 0.07) + (P.overrides.h ?? 0.6) * 0.88;
+    return cfg;
+  }
+  /** Screen keep-outs (HUD rects, fractions) from the provider, cached for ~0.4 s (re-read on resize / preset change). */
+  function screenRects(force = false) {
+    const now = performance.now();
+    if (force || now - P.scrAt > 400) {
+      P.scrAt = now;
+      try { P.scr = (P.screenKeepOut?.() || []).filter((r) => r && r.x1 > r.x0 && r.y1 > r.y0); } catch { P.scr = []; }
+    }
+    return P.scr;
+  }
+  /** Figure box (screen fractions) for a feet point + standing height, with the current pose's extent and aspect. */
+  function figureBox(cx, feet, hStand, camAspect, quadAspect, out = {}) {
+    const fy = Math.max(0.05, F.y1 - F.y0), fx = Math.max(0.05, F.x1 - F.x0);
+    const hf = hStand * F.ratio;
+    const w = (hf / fy) * fx * quadAspect / camAspect;
+    out.x0 = cx - w / 2; out.x1 = cx + w / 2; out.y0 = feet - hf; out.y1 = feet; out.w = w; out.h = hf;
+    return out;
+  }
+
   /** Pick a screen slot for the current preset + camera; returns the solution (also stored in P.last). */
   function solve(camera, quadAspect) {
-    const cfg = { ...ECHO_PRESETS[P.preset] || ECHO_PRESETS.run, ...P.overrides };
+    const cfg = presetCfg();
     camera.updateMatrixWorld();
     const camAspect = camera.aspect || 16 / 9;
     const rects = keepOutRects(camera);
+    const scr = screenRects();
     let best = null, cur = null;
+    const cands = P.debug ? [] : null;
     const slots = cfg.slots || [{ x: 0.2 }];
     for (let si = 0; si < SCALES.length; si++) {
-      const h = Math.min(cfg.h * SCALES[si], 1 - cfg.top - MARGIN);
-      const w = (h * quadAspect) / camAspect;
+      const hs = cfg.fh * SCALES[si];
       for (let i = 0; i < slots.length; i++) {
-        const top = slots[i].top ?? cfg.top;
-        const cx = Math.min(1 - MARGIN - w / 2, Math.max(MARGIN + w / 2, slots[i].x));
-        const quad = { x0: cx - w / 2, x1: cx + w / 2, y0: top, y1: top + h };
-        const body = { x0: cx - (w * BODY_W) / 2, x1: cx + (w * BODY_W) / 2, y0: top + h * 0.06, y1: top + h * 0.92 };
-        let ov = 0;
-        for (const r of rects) ov += (overlap(body, r) / area(body)) * r.weight;
-        const score = ov * 10 + i * 0.04 + si * 0.25;
-        const c = { score, overlap: ov, slot: i, scale: SCALES[si], rect: quad, body, h, cx, top, behind: false, key: `${i}:${si}` };
-        if (!best || score < best.score) best = c;
-        if (P.curKey === c.key) cur = c;
+        const feet = Math.min(1 - MARGIN, slots[i].feet ?? cfg.feet);
+        const fw = figureBox(0, feet, hs, camAspect, quadAspect).w, half = fw * 0.55;   // +10% for arm swings
+        const need = hs * Math.max(ARMS_UP, F.ratio);
+        // candidate centres: the slot's own x, plus nudged just clear of each HUD rect that sits in its column (the combo
+        // column, the vitals) so a slightly shifted figure can keep its size instead of shrinking
+        const xs = [slots[i].x];
+        for (const r of scr) {
+          if (r.y0 >= feet || r.y1 <= feet - need) continue;
+          if (r.x1 > slots[i].x - half && r.x0 < slots[i].x + half) xs.push(r.x1 + HUD_GAP + half, r.x0 - HUD_GAP - half);
+        }
+        for (const x of xs) {
+          const cx = Math.min(1 - MARGIN - half, Math.max(MARGIN + half, x));
+          if (Math.abs(cx - slots[i].x) > 0.12) continue;   // too far from the slot: another slot covers that spot
+          const body = figureBox(cx, feet, hs, camAspect, quadAspect);
+          // headroom: the tallest pose (arms up) must fit between the feet and the HUD / frame top in this column
+          const lim = topLimit(scr, cx - half, cx + half, feet);
+          const room = feet - lim;
+          const head = Math.max(0, need - room) / need;
+          let ov = 0;
+          for (const r of rects) ov += (overlap(body, r) / area(body)) * r.weight;
+          for (const r of scr) ov += (overlap(body, r) / area(body)) * 2;
+          const score = ov * 10 + head * 8 + i * 0.04 + si * 0.25 + Math.abs(cx - slots[i].x) * 1.5;
+          const c = { score, overlap: ov, head, room: +room.toFixed(3), slot: i, scale: SCALES[si], body, hs, cx, feet, behind: false, key: `${i}:${si}` };
+          if (!best || score < best.score) best = c;
+          if (P.curKey === c.key && (!cur || score < cur.score)) cur = c;
+          cands?.push({ key: c.key, cx: +cx.toFixed(3), score: +score.toFixed(3), ov: +ov.toFixed(3), head: +head.toFixed(3) });
+        }
       }
     }
     // boss: nothing beside it is clear -> stand far behind the furthest keep-out, low opacity (depth-tested behind it)
     if (cfg.behind) {
       const far = rects.reduce((m, r) => Math.max(m, r.tag === 'hero' ? 0 : r.far || 0), 0);
-      const h = Math.min(0.9, 1 - 0.02 - MARGIN), w = (h * quadAspect) / camAspect;
-      const bh = { score: 0.12 * 10 + 0.5, overlap: 0, slot: -1, scale: 1, rect: { x0: 0.5 - w / 2, x1: 0.5 + w / 2, y0: 0.02, y1: 0.02 + h }, h, cx: 0.5, top: 0.02, behind: true, depth: Math.max(cfg.depth, far + 12), key: 'behind' };
+      const feet = 1 - MARGIN - 0.1, hs = 0.62;
+      const body = figureBox(0.5, feet, hs, camAspect, quadAspect);
+      const bh = { score: 0.12 * 10 + 0.5, overlap: 0, head: 0, room: 0, slot: -1, scale: 1, body, hs, cx: 0.5, feet, behind: true, depth: Math.max(cfg.depth, far + 12), key: 'behind' };
       if (bh.score < best.score) best = bh;
       if (P.curKey === 'behind') cur = bh;
     }
@@ -252,24 +316,101 @@ export function createEcho({ height = 36, position = new THREE.Vector3(0, 11, 74
       if (P.pend.n < 4) best = cur;
     } else if (!P.snap && cur) { best = cur; P.pend = null; }
     P.curKey = best.key;
+    if (cands) P.cands = cands.sort((a, b) => a.score - b.score).slice(0, 12);
     best.depth ??= cfg.depth;
     best.opacity = best.behind ? cfg.behindOpacity ?? 0.35 : cfg.opacity ?? 0.8;
-    best.keepOut = rects.map((r) => ({ tag: r.tag, x0: +r.x0.toFixed(3), y0: +r.y0.toFixed(3), x1: +r.x1.toFixed(3), y1: +r.y1.toFixed(3) }));
+    const fx = (r) => ({ x0: +r.x0.toFixed(3), y0: +r.y0.toFixed(3), x1: +r.x1.toFixed(3), y1: +r.y1.toFixed(3) });
+    best.keepOut = rects.map((r) => ({ tag: r.tag, ...fx(r) })).concat(scr.map((r) => ({ tag: r.tag || 'hud', screen: true, ...fx(r) })));
+    best.rect = fx(best.body);
     best.preset = P.preset;
-    // screen slot -> world anchor at `depth` along the camera's axes
+    // feet point (screen) -> world anchor at `depth` along the camera's axes; standing height -> world units
     const fovY = THREE.MathUtils.degToRad(camera.fov || 50);
     const tanH = Math.tan(fovY / 2);
     const d = best.depth;
-    const ndcX = best.cx * 2 - 1, ndcY = 1 - (best.top + best.h / 2) * 2;
+    const ndcX = best.cx * 2 - 1, ndcY = 1 - best.feet * 2;
     camera.getWorldPosition(_cp);
     camera.getWorldDirection(_f);
     _r.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
     _u.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
     P.goal.copy(_cp).addScaledVector(_f, d).addScaledVector(_r, ndcX * d * tanH * camAspect).addScaledVector(_u, ndcY * d * tanH);
-    P.goalH = best.h * 2 * d * tanH;
+    P.goalH = best.hs * 2 * d * tanH;
     P.goalOpacityK = best.opacity;
     P.last = best;
     return best;
+  }
+
+  /**
+   * Per frame (preset mode): place the quad so the figure's feet sit on the anchor, scale it by the pose extent (raised
+   * arms make it taller), then clamp it to the safe frame and below the HUD with the CURRENT camera, so no single frame
+   * (arms snapping up between two solves, a camera move) puts the hands over the HUD or the frame edge.
+   */
+  function fitFrame(cam, pulse) {
+    const camAspect = cam.aspect || 16 / 9, qa = aspect.v;
+    const fovY = THREE.MathUtils.degToRad(cam.fov || 50), tanH = Math.tan(fovY / 2);
+    cam.updateMatrixWorld();
+    _v.copy(P.anchor).applyMatrix4(cam.matrixWorldInverse);
+    const dz = Math.max(1, -_v.z);
+    _v.applyMatrix4(cam.projectionMatrix);
+    let sx = _v.x * 0.5 + 0.5;
+    const feet = 0.5 - _v.y * 0.5;
+    const kS = 1 / (2 * dz * tanH);                    // screen fraction (of the frame height) per world metre at the anchor
+    const fy = Math.max(0.05, F.y1 - F.y0), fx = Math.max(0.05, F.x1 - F.x0);
+    let hf = P.anchorH * F.ratio * (1 + 0.012 * pulse) * kS;
+    // horizontal safe frame: shift (screen-space) so the whole figure stays inside the side margins
+    let w = (hf / fy) * fx * qa / camAspect;
+    let shift = 0;
+    if (sx - w / 2 < MARGIN) shift = MARGIN - (sx - w / 2);
+    else if (sx + w / 2 > 1 - MARGIN) shift = 1 - MARGIN - (sx + w / 2);
+    sx += shift;
+    // vertical: the top may not rise above the safe frame / the HUD rects in this column
+    const lim = topLimit(screenRects(), sx - w / 2, sx + w / 2, feet);
+    const room = Math.max(0.02, feet - lim);
+    const clamped = hf > room;
+    if (clamped) { hf = room; w = (hf / fy) * fx * qa / camAspect; }
+    // HUD rects BESIDE the figure (the combo column): slide sideways off them (arms swinging out between solves)
+    const top = feet - hf;
+    for (const r of screenRects()) {
+      if (r.y1 <= top || r.y0 >= feet) continue;
+      const x0 = sx - w / 2, x1 = sx + w / 2;
+      if (r.x1 <= x0 || r.x0 >= x1) continue;
+      const toR = r.x1 + HUD_GAP * 0.5 - x0, toL = r.x0 - HUD_GAP * 0.5 - x1;   // > 0 / < 0
+      const okR = x1 + toR <= 1 - MARGIN, okL = x0 + toL >= MARGIN;
+      const d = okR && (!okL || toR < -toL) ? toR : okL ? toL : 0;
+      sx += d; shift += d;
+    }
+    if (shift) {   // slid into another column: re-check the headroom there
+      const lim2 = topLimit(screenRects(), sx - w / 2, sx + w / 2, feet);
+      if (feet - lim2 < hf) { hf = Math.max(0.02, feet - lim2); w = (hf / fy) * fx * qa / camAspect; }
+    }
+    const Hf = hf / kS, Hq = Hf / fy, Wq = Hq * qa;
+    const fxc = (F.x0 + F.x1) / 2;
+    // quad offset from the feet anchor (object3d faces the camera, so local x / y are screen right / up)
+    mesh.position.set(-(fxc - 0.5) * Wq + shift * 2 * dz * tanH * camAspect, (F.y1 - 0.5) * Hq, 0);
+    mesh.scale.set(Wq, Hq, 1);
+    P.fig = { x0: +(sx - w / 2).toFixed(3), y0: +(feet - hf).toFixed(3), x1: +(sx + w / 2).toFixed(3), y1: +feet.toFixed(3), limit: +lim.toFixed(3), ratio: +F.ratio.toFixed(3), clamped };
+  }
+
+  /** Track the pose extent inside the quad (source bbox through the crop; mirrored like the shader). */
+  function trackFigure(frame, dt) {
+    const b = frame?.bbox;
+    if (!b || !(b.y1 > b.y0) || !crop.w || !crop.h) return;
+    const m = uniforms.uMirror.value > 0.5;
+    let x0 = (b.x0 - crop.x) / crop.w, x1 = (b.x1 - crop.x) / crop.w;
+    if (m) { const t = 1 - x1; x1 = 1 - x0; x0 = t; }
+    const y0 = Math.max(0, (b.y0 - crop.y) / crop.h - FIG_PAD), y1 = Math.min(1, (b.y1 - crop.y) / crop.h + FIG_PAD * 0.4);
+    x0 = Math.max(0, x0 - FIG_PAD); x1 = Math.min(1, x1 + FIG_PAD);
+    const ext = (y1 - y0) * crop.h;                    // visible figure height in source uv
+    const k = F.init ? 1 - Math.exp(-dt * 10) : 1;
+    // growing upward (arms going up) is taken immediately; everything else is smoothed (mask edge noise)
+    F.y0 = y0 < F.y0 || !F.init ? y0 : F.y0 + (y0 - F.y0) * k;
+    F.y1 += (y1 - F.y1) * k; F.x0 += (x0 - F.x0) * k; F.x1 += (x1 - F.x1) * k;
+    // standing reference: follows a smaller extent quickly, a larger one only slowly (moving closer to the camera),
+    // so a raised-arms pose reads as TALLER than standing instead of re-normalising the figure
+    if (!F.init) F.ref = ext;
+    else F.ref += (ext - F.ref) * (1 - Math.exp(-dt * (ext < F.ref ? 2 : 0.12)));
+    const r = Math.min(1.6, Math.max(0.75, ext / Math.max(1e-3, F.ref)));
+    F.ratio = r > F.ratio || !F.init ? r : F.ratio + (r - F.ratio) * k;
+    F.init = true;
   }
 
   /** Where the echo is on screen right now (fractions), from its actual transform. */
@@ -296,16 +437,31 @@ export function createEcho({ height = 36, position = new THREE.Vector3(0, 11, 74
       if (!ECHO_PRESETS[name]) throw new Error(`echo.setPreset: ${name}`);
       P.mode = 'preset'; P.preset = name; P.overrides = overrides || {};
       if (keepOut !== undefined) P.keepOut = keepOut ? [].concat(keepOut) : null;
-      P.solveIn = 0; P.snap = true;
+      P.solveIn = 0; P.snap = true; P.scrAt = -1e9;
     },
     /** Explicit keep-out list (Object3D / Sphere / Box3 / Vector3 / {center, radius}); null clears. */
     setKeepOut(list) { P.keepOut = list ? [].concat(list) : null; P.solveIn = 0; },
+    /**
+     * fn() -> [{ x0, y0, x1, y1, tag }] screen-space keep-outs (fractions of the render canvas, y down), e.g. the HUD
+     * rects read from the DOM (mirror.js). Re-read every ~0.4 s and on refreshScreenKeepOut(). The figure is placed
+     * outside them and its top (raised arms included) is clamped below any of them in its column, every frame.
+     */
+    setScreenKeepOut(fn) { P.screenKeepOut = fn; P.scrAt = -1e9; P.solveIn = 0; },
+    /** Debug: debugSolve(true) records the best solver candidates of each solve in .candidates. */
+    debugSolve(on = true) { P.debug = on; },
+    get candidates() { return P.cands || null; },
+    /** Re-read the screen keep-outs now and re-solve (resize / game state change). */
+    refreshScreenKeepOut() { screenRects(true); P.solveIn = 0; },
     /** fn() -> [{ obj, weight, tag }]: automatic keep-outs re-read on every solve (mirror.js wires boss / rift / hero). */
     setAutoKeepOut(fn) { P.autoKeepOut = fn; },
     /** Legacy world placement (with camera parallax). Leaves preset mode until the next setPreset(). */
     setPlacement({ position: p, height: h } = {}) { if (p) base.copy(p); if (h) height = h; P.mode = 'world'; },
-    /** { mode, preset, rect (screen fractions of the chosen slot), overlap, behind, depth, keepOut[] } of the last solve. */
-    get placement() { const L = P.last; return { mode: P.mode, preset: P.preset, ...(L && P.mode === 'preset' ? { slot: L.slot, scale: L.scale, rect: L.rect, overlap: +L.overlap.toFixed(4), behind: L.behind, depth: L.depth, opacity: L.opacity, keepOut: L.keepOut } : {}) }; },
+    /**
+     * { mode, preset, rect (solved standing-figure box, screen fractions), figure (the figure's box THIS frame, after the
+     * pose-extent scale and the HUD / safe-frame clamp: { x0, y0, x1, y1, limit, ratio, clamped }), overlap, headroom
+     * (1 = room for raised arms), behind, depth, keepOut[] (3D + screen) } of the last solve.
+     */
+    get placement() { const L = P.last; return { mode: P.mode, preset: P.preset, ...(L && P.mode === 'preset' ? { slot: L.slot, scale: L.scale, rect: L.rect, figure: P.fig, overlap: +L.overlap.toFixed(4), headroom: +(1 - L.head).toFixed(3), behind: L.behind, depth: L.depth, opacity: L.opacity, keepOut: L.keepOut } : {}) }; },
     /** Projected screen rect (fractions) of the echo quad through `camera` right now. */
     measure,
     /** Force a re-solve now (e.g. right after a camera cut). */
@@ -339,6 +495,7 @@ export function createEcho({ height = 36, position = new THREE.Vector3(0, 11, 74
       aspect.v = texW && texH ? (texW * crop.w) / (texH * crop.h) : 16 / 9;
       const cam = o.camera;
       if (P.mode === 'preset' && cam) {
+        trackFigure(frame, o.dt);
         P.solveIn -= o.dt;
         if (P.solveIn <= 0) { solve(cam, aspect.v); P.solveIn = 0.2; }
         const k = P.snap ? 1 : 1 - Math.exp(-o.dt * 2.5);
@@ -346,15 +503,28 @@ export function createEcho({ height = 36, position = new THREE.Vector3(0, 11, 74
         const kk = P.snap ? 1 : k;
         P.anchor.lerp(P.goal, kk); P.anchorH += (P.goalH - P.anchorH) * kk; P.opacityK += (P.goalOpacityK - P.opacityK) * kk;
         P.snap = false;
+        // camera cut that the distance test missed (same anchor, new view): if the feet left the safe frame or went
+        // behind the camera, re-solve and jump now rather than drawing one frame off-screen / over the HUD
+        _v.copy(P.anchor).applyMatrix4(cam.matrixWorldInverse);
+        const behindCam = _v.z > -1;
+        _v.applyMatrix4(cam.projectionMatrix);
+        if (behindCam || Math.abs(_v.x) > 1.02 || _v.y > 0.95 || _v.y < -1.02) {
+          solve(cam, aspect.v); P.solveIn = 0.2;
+          P.anchor.copy(P.goal); P.anchorH = P.goalH; P.opacityK = P.goalOpacityK;
+        }
         object3d.position.copy(P.anchor);
         cam.getWorldQuaternion(_q); object3d.quaternion.copy(_q);   // face the camera exactly (fit is computed for this)
-        const s = P.anchorH * (1 + 0.012 * o.pulse);
-        mesh.scale.set(s * aspect.v, s, 1);
+        fitFrame(cam, o.pulse);
+        // in a clear slot the hologram is projected OVER the scenery (floating islands / tree tops must not cut it up);
+        // the boss 'behind' fallback keeps depth testing so the Warden hides it
+        mat.depthTest = !!P.last?.behind;
         uniforms.uOpacity.value = opacity * P.opacityK;
       } else {
         // legacy world placement: follow the camera partly (reads as very far away) and face it (yaw only)
         const s = height * (1 + 0.012 * o.pulse);
+        mesh.position.set(0, 0, 0);
         mesh.scale.set(s * aspect.v, s, 1);
+        mat.depthTest = true;
         uniforms.uOpacity.value = opacity;
         if (cam) {
           cam.getWorldPosition(_cp);

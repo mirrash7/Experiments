@@ -159,7 +159,7 @@ export function createHUD(ctx, root) {
     L.set = (id, m) => {
       const old = L.msgs.get(id);
       if (old && old.key === m.key) { Object.assign(old, { priority: m.priority }); return old; }
-      if (old) retire(L, old);
+      if (old) retire(L, old, true);
       const msg = { id, seq: ++msgSeq, waited: 0, shownFor: 0, ...m, node: null };
       L.msgs.set(id, msg);
       return msg;
@@ -182,9 +182,13 @@ export function createHUD(ctx, root) {
     };
     return L;
   }
-  function retire(L, m) { if (L.cur === m) L.cur = null; if (m.node) hideNode(m, L.name === 'low' ? 110 : undefined); }
+  // replaced (same id, new content) on the low lane: the outgoing plate goes in the same frame (QA r3 art P1-1: a
+  // fading HANDS UP plate under PUSH! read as "KE·PUSH!·M UP…"); a plain clear still fades fast
+  function retire(L, m, replaced = false) { if (L.cur === m) L.cur = null; if (m.node) hideNode(m, L.name === 'low' ? (replaced ? 0 : 110) : undefined); }
   function showNode(host, m) {
     if (!m.node) m.node = m.render();
+    // never two prompt plates at once: anything still fading out on this lane goes now
+    if (m.prompt) for (const n of host.querySelectorAll(':scope > .bl-prompt')) if (n !== m.node) { n.getAnimations().forEach((a) => a.cancel()); n.remove(); }
     m.node.getAnimations().forEach((a) => a.cancel());
     host.append(m.node);
     m.node.animate(m.enter || [{ opacity: 0, transform: 'scale(1.4)' }, { opacity: 1, transform: 'none' }], { duration: m.enterMs || 240, easing: 'cubic-bezier(.2,1.3,.4,1)', fill: 'both' });
@@ -440,7 +444,10 @@ export function createHUD(ctx, root) {
     }
     if (now - pipS.fpsT > 1000) {
       pipS.fps = Math.round(pipS.frames * 1000 / (now - pipS.fpsT)); pipS.frames = 0; pipS.fpsT = now;
-      pipStats.textContent = frame ? `${pipS.fps} fps · ${Math.round(pipS.lat)} ms` : 'NO SIGNAL';
+      // no camera (demo / autoplay bot): no tracker stats (QA r3 art P2-9: "24 fps · 45 ms" / "0 fps" read as lag)
+      const synth = frame?.source === 'synthetic' || /^(demo|autoplay)$/.test(ctx.game?.tracking?.kind || '');
+      pipStats.textContent = !frame ? 'NO SIGNAL' : synth ? '' : pipS.fps > 0 ? `${pipS.fps} fps · ${Math.round(pipS.lat)} ms` : '—';
+      pipStats.hidden = !!frame && synth;
       const src = { hmr: 'INSTANT HMR', mediapipe: 'MEDIAPIPE', synthetic: 'DEMO PLAYER', recorded: 'REPLAY' }[frame?.source] || 'AI VISION';
       if (pipSrc.textContent !== src) pipSrc.textContent = src;
       pip.classList.toggle('is-lost', !frame);
@@ -468,7 +475,8 @@ export function createHUD(ctx, root) {
       let vw = 16, vh = 9;
       if (v && v.videoWidth) { vw = v.videoWidth; vh = v.videoHeight; }
       const s = Math.max(W / vw, H / vh), ox = (W - vw * s) / 2, oy = (H - vh * s) / 2;
-      const map = v && v.videoWidth ? (x, y) => [ox + x * vw * s, oy + y * vh * s] : (x, y) => [W * (0.2 + x * 0.6), y * H];
+      // no video: the skeleton sits in a padded box below the label bar (arms-up poses no longer cross the label)
+      const map = v && v.videoWidth ? (x, y) => [ox + x * vw * s, oy + y * vh * s] : (x, y) => [W * (0.22 + x * 0.56), H * (0.2 + y * 0.74)];
       drawSkeleton(pg, fr, kp, edges, map, { width: 2.6, glow: 12 });
     }
   }
@@ -540,8 +548,20 @@ export function createHUD(ctx, root) {
     const gap = coachOn && node ? Math.min(innerWidth / 100, innerHeight * 0.016) * 0.6 : 0;
     coachH = coachOn ? coachEl.offsetHeight : 0;
     const cw = coachOn ? coachEl.offsetWidth : 0;
-    const w = Math.max(pw, cw, 40), h = ph + gap + coachH;
-    const p = placePrompt(w, h, m?.threat ?? null, now);
+    let w = Math.max(pw, cw, 40), h = ph + gap + coachH;
+    let p = placePrompt(w, h, m?.threat ?? null, now);
+    // size-aware (QA r3 art P1-1): a plate too wide for the room beside (or above) the hero drops its kicker and
+    // sub-line and is placed again, rather than landing on the torso
+    if (!p.clean && node && !node.classList.contains('is-compact') && node.querySelector('.bl-prompt-sub, .bl-prompt-kicker')) {
+      node.classList.add('is-compact');
+      const pw2 = node.offsetWidth, ph2 = node.offsetHeight;
+      w = Math.max(pw2, cw, 40); h = ph2 + gap + coachH;
+      p = placePrompt(w, h, m?.threat ?? null, now);
+      return placeAt(p, node, ph2, h, gap, coachOn, m, dt);
+    }
+    return placeAt(p, node, ph, h, gap, coachOn, m, dt);
+  }
+  function placeAt(p, node, ph, h, gap, coachOn, m, dt) {
     const tx = p.x, ty = p.y - h / 2 + ph / 2;                               // plate centre
     const snap = laneY < 0 || m !== laneMsg || (p.side && laneSide && p.side !== laneSide);
     const k = snap ? 1 : 1 - Math.exp(-dt * 10);
@@ -585,13 +605,19 @@ export function createHUD(ctx, root) {
     showSkip(false); coach(null);
     try { if (ctx.game?.skipAwaken) ctx.game.skipAwaken(); else ctx.bus?.emit?.('awaken:skip', {}); } catch (e) { console.error(e); }
   }
+  /** The move a coaching event is about (the brute in its punch phase wants punches, not a guard). */
+  function awkMove(d) {
+    const n = d.note || AWK.note;
+    if (n?.type === 'brute' && n.phase === 'punch') return 'punch';
+    return noteMove(n) || d.move;
+  }
   function onAwaken(d = {}) {
     const now = performance.now();
     switch (d.phase) {
       case 'start': AWK.on = true; AWK.waitAt = 0; AWK.coachSeen = false; coach(null); showSkip(true); break;
       case 'wait': AWK.waitAt = now; AWK.note = d.note || null; AWK.localCoach = false; if (C.stage !== 'auto') coach(null); setSkipHand(false); if (!AWK.on) { AWK.on = true; showSkip(true); } break;
-      case 'coach': AWK.coachSeen = true; coach({ stage: 'coach', move: noteMove(d.note || AWK.note) || d.move, hint: d.hint }); setSkipHand(true); break;
-      case 'loose': AWK.coachSeen = true; coach({ stage: 'loose', move: noteMove(d.note || AWK.note) || d.move, hint: d.hint, text: d.text }); setSkipHand(true); break;
+      case 'coach': AWK.coachSeen = true; coach({ stage: 'coach', move: awkMove(d), hint: d.hint }); setSkipHand(true); break;
+      case 'loose': AWK.coachSeen = true; coach({ stage: 'loose', move: awkMove(d), hint: d.hint, text: d.text }); setSkipHand(true); break;
       case 'auto': case 'assist': coach({ stage: 'auto', move: d.move, text: d.text }); AWK.waitAt = 0; setSkipHand(false); break;
       case 'resolved': case 'release': if (C.stage !== 'auto') coach(null); AWK.waitAt = 0; setSkipHand(false); break;
       case 'end': AWK.on = false; AWK.waitAt = 0; coach(null); showSkip(false); break;
@@ -675,7 +701,11 @@ export function createHUD(ctx, root) {
     show(on) {
       on = !!on;
       if (S.shown && !on) { lanes.top.clearAll(); lanes.low.clearAll(); lowLane.append(coachEl); coach(null); showSkip(false); AWK.on = false; AWK.waitAt = 0; S.prompt = null; S.promptKey = null; S.distanceShown = null; D.raw = null; }
+      const appear = on && !S.shown;
       S.shown = on; el.classList.toggle('bl-hidden', !on);
+      // title / clear-space -> run (QA r3 art P2-3): the HUD fades in only after the outgoing screen is gone (the host
+      // fades a hidden screen out in 140 ms), so menu, logo, hearts and SKIP INTRO never share a frame
+      if (appear) { el.getAnimations().forEach((a) => a.cancel()); el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: 170, easing: 'ease-out', fill: 'backwards' }); }
       if (on && S.max < 0) setHealth(5, 5); if (on && S.flow < 0) setFlow(0, false);
       if (on) { const m = ctx.settings?.mode; modeTag.textContent = m === 'showcase' ? 'SHOWCASE · NO-FAIL' : m === 'challenge' ? 'CHALLENGE' : ''; modeTag.dataset.mode = m || ''; }
     },

@@ -1,6 +1,6 @@
 // BREAKLIGHT CV: the Mirror "pour" (QA art r2 P1-3). The silhouette the player sees dissolves into a borderless stream of
-// light particles that arc into the hero's on-screen body and land in a flash ON the hero (a light-body glow along the
-// bones, a chest burst and a ground ring). No panel, no DOM box: one transparent full-screen 2D canvas, removed at the end.
+// light particles that arc into the hero's on-screen body and land in a flash ON the hero (a soft additive rim light
+// around the hero's silhouette that swells and fades, a faint chest bloom and a ground ring). No panel, no DOM box: one transparent full-screen 2D canvas, removed at the end.
 //
 // Sources: the pixels of whatever shows the silhouette (the mirror's own canvas in cv-lab, the UI's calibration canvas
 // in the game, or any element / rect passed in). Targets: random points on the hero's bone capsules (head, torso, limbs)
@@ -127,29 +127,57 @@ export function runPour({ sources, hero = null, camera = null, canvas = null, re
   };
   const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
 
-  // ---- hero light body (bone capsules projected) for the build-up glow and the arrival flash
+  // ---- hero rim light (QA art r3 P2-4): the arrival glow is a soft additive rim + bloom AROUND the hero's silhouette,
+  // never a fill. The silhouette is approximated by the bone capsules, drawn as ONE union mask (source-over, so the
+  // shoulder line and the torso never double up into a band) at half resolution; the rim is the blurred mask with a
+  // softly-eroded copy cut out of it (a feathered edge, no hard line), tinted, plus a wider faint bloom.
   const pa = { x: 0, y: 0, ok: true }, pb = { x: 0, y: 0, ok: true };
-  /** A soft light silhouette of the hero: bone capsules in two batched strokes (torso + limbs) so overlaps don't stack. */
-  function lightBody(alpha, widthK, color) {
-    if (!segs.length || !camera || alpha <= 0.01) return;
+  const RS = 0.5;   // mask resolution (x CSS px)
+  const mW = Math.max(2, Math.round(W * RS)), mH = Math.max(2, Math.round(H * RS));
+  const mkC = () => { const c = document.createElement('canvas'); c.width = mW; c.height = mH; return c; };
+  const maskC = mkC(), rimC = mkC();
+  const mg = maskC.getContext('2d'), rg = rimC.getContext('2d');
+  const hasFilter = typeof rg.filter === 'string';
+  /** Draw `src` into `dst` blurred by `px` (mask px), with the given composite op. ctx.filter, or a shadow fallback. */
+  function blurDraw(dst, src, px, op) {
+    dst.save(); dst.globalCompositeOperation = op;
+    if (hasFilter) { dst.filter = `blur(${px.toFixed(1)}px)`; dst.drawImage(src, 0, 0); }
+    else { dst.shadowColor = '#fff'; dst.shadowBlur = px * 2; dst.shadowOffsetX = mW + 50; dst.drawImage(src, -(mW + 50), 0); }
+    dst.restore();
+  }
+  let pxPerM = 0;
+  /** The hero's capsule silhouette into maskC (white, union). Returns false when there is nothing to draw. */
+  function drawMask() {
+    if (!segs.length || !camera) return false;
     project(bonePos.hips || bonePos[segs[0][0]], pa);
     _v.copy(bonePos.hips || bonePos[segs[0][0]]); _v.y += Hh; project(_v, pb);
-    const pxPerM = Math.abs(pa.y - pb.y) / Hh;
-    const core = new Path2D(), limbs = new Path2D();
-    let coreW = 0, limbW = 0, nc = 0, nl = 0;
+    pxPerM = Math.abs(pa.y - pb.y) / Hh;
+    mg.clearRect(0, 0, mW, mH);
+    mg.save(); mg.scale(RS, RS);
+    mg.lineCap = 'round'; mg.lineJoin = 'round'; mg.strokeStyle = '#fff'; mg.fillStyle = '#fff';
     for (const [a, b, r] of segs) {
       project(bonePos[a], pa); project(bonePos[b], pb);
-      const isCore = r >= 0.045;
-      (isCore ? core : limbs).moveTo(pa.x, pa.y); (isCore ? core : limbs).lineTo(pb.x, pb.y);
-      if (isCore) { coreW += r; nc++; } else { limbW += r; nl++; }
+      mg.lineWidth = Math.max(2, r * Hh * pxPerM * 1.7);
+      mg.beginPath(); mg.moveTo(pa.x, pa.y); mg.lineTo(pb.x, pb.y); mg.stroke();
     }
-    g.save();
-    g.globalCompositeOperation = 'lighter';
-    g.lineCap = 'round'; g.lineJoin = 'round';
-    g.strokeStyle = color; g.shadowColor = color; g.shadowBlur = 26 * widthK;
-    g.globalAlpha = Math.min(1, alpha) * 0.55;
-    g.lineWidth = Math.max(3, (coreW / Math.max(1, nc)) * Hh * pxPerM * 2 * widthK); g.stroke(core);
-    g.lineWidth = Math.max(2, (limbW / Math.max(1, nl)) * Hh * pxPerM * 2 * widthK); g.stroke(limbs);
+    mg.restore();
+    return true;
+  }
+  /** Soft rim light around the hero. alpha 0..1, spread: rim width (x hero-height px), color css. */
+  function rimLight(alpha, spread, color) {
+    if (alpha <= 0.01 || !drawMask()) return;
+    const hpx = Hh * pxPerM * RS;                       // hero height in mask px
+    const rimPx = Math.max(2, hpx * 0.022 * spread);
+    rg.clearRect(0, 0, mW, mH);
+    blurDraw(rg, maskC, rimPx, 'source-over');           // soft halo around (and inside) the silhouette
+    blurDraw(rg, maskC, rimPx * 0.9, 'destination-out'); // hollow it out: a dilated-then-eroded ring...
+    blurDraw(rg, maskC, rimPx * 2.6, 'source-over');     // ...plus a wide soft bloom that falls off outward
+    blurDraw(rg, maskC, rimPx * 0.6, 'destination-out'); // keep the body itself clear (only a feathered inner edge)
+    rg.save(); rg.globalCompositeOperation = 'source-in'; rg.fillStyle = color; rg.fillRect(0, 0, mW, mH); rg.restore();
+    g.save(); g.globalCompositeOperation = 'lighter'; g.globalAlpha = Math.min(1, alpha);
+    g.imageSmoothingEnabled = true;
+    g.drawImage(rimC, 0, 0, W, H);
+    g.drawImage(rimC, 0, 0, W, H);                       // two passes: brighter core of the rim without a wider spread
     g.restore();
   }
   function groundRing(k) {
@@ -169,13 +197,14 @@ export function runPour({ sources, hero = null, camera = null, canvas = null, re
     else { const r = rect || { left: W / 2 - 80, top: H * 0.3, width: 160, height: H * 0.5 }; x = r.left + r.width / 2; y = r.top + r.height * 0.35; R = r.height * 0.8; }
     R *= 0.35 + 0.9 * k;
     const gr = g.createRadialGradient(x, y, 0, x, y, R);
-    gr.addColorStop(0, `rgba(255,248,224,${0.6 * (1 - k)})`); gr.addColorStop(0.3, `rgba(255,200,110,${0.5 * (1 - k)})`); gr.addColorStop(0.6, `rgba(126,249,255,${0.18 * (1 - k)})`); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    const f = (1 - k) * (1 - k);   // smooth ease-out
+    gr.addColorStop(0, `rgba(255,248,224,${0.32 * f})`); gr.addColorStop(0.25, `rgba(255,206,120,${0.2 * f})`); gr.addColorStop(0.6, `rgba(126,249,255,${0.07 * f})`); gr.addColorStop(1, 'rgba(0,0,0,0)');
     g.save(); g.globalCompositeOperation = 'lighter'; g.fillStyle = gr; g.fillRect(x - R, y - R, R * 2, R * 2); g.restore();
   }
 
   return new Promise((resolve) => {
     const t0 = performance.now();
-    const flashAt = duration * 0.86, flashLen = 420, end = duration + flashLen;
+    const flashAt = duration * 0.86, flashLen = 560, end = duration + flashLen;
     let arrived = 0, flashed = false;
     const step = () => {
       const t = (performance.now() - t0) * timeScale;
@@ -216,12 +245,14 @@ export function runPour({ sources, hero = null, camera = null, canvas = null, re
       g.restore();
       // build-up glow on the hero as particles land, then the flash
       const fr = arrived / Math.max(1, N);
-      if (t < flashAt) lightBody(fr * 0.4, 0.6, '#ffd9a0');
+      if (t < flashAt) rimLight(fr * 0.55, 0.8, '#ffd9a0');
       else {
         if (!flashed) { flashed = true; try { onArrive?.(); } catch { /* */ } }
         const k = Math.min(1, (t - flashAt) / flashLen);
-        if (flash) { lightBody((1 - k) * 0.9, 0.75 + k * 0.5, '#ffe6b0'); chestBurst(k); groundRing(k); }
-        else lightBody((1 - k) * 0.45, 0.8, '#ffd9a0');
+        // smooth envelope: swells for the first ~20% (from the build-up level), then eases out to nothing
+        const env = k < 0.2 ? 0.55 + 0.45 * Math.sin((k / 0.2) * Math.PI * 0.5) : Math.pow(1 - (k - 0.2) / 0.8, 2);
+        if (flash) { rimLight(env, 1 + k * 0.9, '#ffe2a8'); chestBurst(k); groundRing(k); }
+        else rimLight(env * 0.6, 1, '#ffd9a0');
       }
       if (t < end) requestAnimationFrame(step);
       else { cv.remove(); resolve({ particles: N, targets: segs.length ? 'bones' : 'rect' }); }

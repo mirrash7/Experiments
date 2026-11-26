@@ -665,6 +665,23 @@ html.bl-booth-results .blcv-privacy { bottom: var(--bl-booth-toast-b, 12vh); }
 /* no parked / idle hand reticle over the letterboxed replay */
 html.bl-res-replay .bl-cursor.is-idle, html.bl-res-replay .bl-cursor.is-lost { opacity: 0; }
 
+/* ================================================================ round 3 polish */
+/* prompt plate too wide for the room beside the hero: kicker + sub-line drop (hud.js placeLowLane) */
+.bl-prompt.is-compact .bl-prompt-kicker, .bl-prompt.is-compact .bl-prompt-sub { display: none; }
+.bl-prompt-text { white-space: nowrap; }
+.bl-pip-stats[hidden] { display: none; }
+/* pause: abandoned-run countdown ("Still there?") */
+.bl-pause-abandon { display: none; margin: calc(var(--u) * 1) auto 0; padding: calc(var(--u) * 0.7) calc(var(--u) * 1.4); border-radius: calc(var(--u) * 0.6);
+  border: 1.5px solid var(--gold); background: rgba(40, 24, 4, 0.55); text-align: center; }
+.bl-pause-abandon.is-on { display: block; animation: bl-pulse 1.2s ease-in-out infinite; }
+.bl-pause-abandon b { display: block; font-family: var(--display); font-weight: 400; font-size: calc(var(--u) * 1.9); color: var(--gold); letter-spacing: 0.04em; }
+.bl-pause-abandon span { display: block; margin-top: 0.3em; font-size: calc(var(--u) * 0.9); font-weight: 700; letter-spacing: 0.12em; color: #fff; }
+.bl-pause-abandon em { font-style: normal; color: var(--gold); font-variant-numeric: tabular-nums; }
+/* clear-space: explicit confirmation (hold still in frame / I'M CLEAR); the ring now counts the hold-still */
+.bl-cs-auto-lab { font-size: calc(var(--u) * 0.78); font-weight: 700; letter-spacing: 0.14em; color: var(--dim); max-width: calc(var(--u) * 12); line-height: 1.25; }
+.bl-cs-auto-lab.is-on { color: var(--green); }
+.bl-cs-timeout { font-size: calc(var(--u) * 0.72); color: var(--dimmer); letter-spacing: 0.1em; margin-top: calc(var(--u) * 0.6); min-height: 1.2em; }
+
 @media (prefers-reduced-motion: reduce) {
   .bl-ui *, .bl-ui *::before, .bl-ui *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }

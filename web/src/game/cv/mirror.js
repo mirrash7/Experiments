@@ -57,6 +57,47 @@ export function createMirror({ video = null, renderer = null, scene = null, came
     return out;
   });
 
+  // screen-space echo keep-outs (QA art r3 P1-2): the game HUD's rects, read from the DOM (getBoundingClientRect) as
+  // fractions of the render canvas. Re-read by the echo every ~0.4 s (state changes show / hide HUD parts) and on resize.
+  const HUD_PARTS = [
+    ['.bl-vitals', 'vitals', true], ['.bl-score', 'score', true], ['.bl-combo', 'combo', false], ['.bl-pip', 'pip', false],
+    ['.bl-awk-skip', 'skip', false], ['.bl-lane-top > *', 'banner', false],
+  ];
+  function hudKeepOut() {
+    if (typeof document === 'undefined') return [];
+    const out = [];
+    const huds = [...document.querySelectorAll('.bl-hud')].filter((h) => !h.classList.contains('bl-hidden') && h.getClientRects().length);
+    if (!huds.length) return out;
+    const C = renderer?.domElement?.getBoundingClientRect?.() || { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    if (C.width < 2 || C.height < 2) return out;
+    const pad = 0.006;
+    const push = (r, tag) => {
+      if (!r || r.width < 1 || r.height < 1) return;
+      out.push({ tag, x0: (r.left - C.left) / C.width - pad, y0: (r.top - C.top) / C.height - pad, x1: (r.right - C.left) / C.width + pad, y1: (r.bottom - C.top) / C.height + pad });
+    };
+    const shown = (el) => { if (el.closest('.bl-hidden')) return false; const cs = getComputedStyle(el); return cs.display !== 'none' && cs.visibility !== 'hidden'; };
+    for (const hud of huds) {
+      let banner = false;
+      for (const [sel, tag, deep] of HUD_PARTS) {
+        for (const el of hud.querySelectorAll(sel)) {
+          if (!shown(el)) continue;
+          // union with the descendants: labels such as "OVERDRIVE x2" overflow their flex box
+          let { left, top, right, bottom } = el.getBoundingClientRect();
+          if (deep) for (const d of el.querySelectorAll('*')) { const r = d.getBoundingClientRect(); if (r.width < 1 || r.height < 1) continue; left = Math.min(left, r.left); top = Math.min(top, r.top); right = Math.max(right, r.right); bottom = Math.max(bottom, r.bottom); }
+          push({ left, top, right, bottom, width: right - left, height: bottom - top }, tag);
+          if (tag === 'banner') banner = true;
+        }
+      }
+      // the top banner lane is empty between banners: reserve its slot anyway (act banners drop in mid-Overdrive)
+      const lane = hud.querySelector('.bl-lane-top');
+      if (!banner && lane && shown(lane)) { const r = lane.getBoundingClientRect(); const top = (r.top - C.top) / C.height; out.push({ tag: 'banner', x0: 0.32, x1: 0.68, y0: top - pad, y1: top + 0.11 }); }
+    }
+    return out;
+  }
+  echo.setScreenKeepOut(hudKeepOut);
+  const onResize = () => echo.refreshScreenKeepOut();
+  if (typeof window !== 'undefined') window.addEventListener('resize', onResize);
+
   const st = {
     mode: 'off', quality, time: 0, pulse: 0, lastBeat: -1, paletteName: 'calibrate', paletteOverride: null,
     framing: 'full', echoFraming: 'auto', pouring: false, recording: false,
@@ -77,7 +118,7 @@ export function createMirror({ video = null, renderer = null, scene = null, came
   st.boothHold = 0;
 
   /** Smoothed crop around the person's bbox (source uv) for a target aspect. */
-  function autoCrop(cur, frame, targetAspect, dt, init) {
+  function autoCrop(cur, frame, targetAspect, dt, init, fastGrow = false) {
     const b = frame?.bbox;
     const fa = frame ? frame.w / frame.h : 16 / 9;
     let x = 0, y = 0, w = 1, h = 1;
@@ -89,7 +130,8 @@ export function createMirror({ video = null, renderer = null, scene = null, came
       x = Math.min(1 - w, Math.max(0, cx - w / 2));
       y = Math.min(1 - h, Math.max(0, cy - h / 2));
     }
-    const k = init ? 1 : 1 - Math.exp(-dt * 3);
+    // fastGrow (echo): open up quickly when the person grows (arms going up) so the hands are never cut by the quad edge
+    const k = init ? 1 : 1 - Math.exp(-dt * (fastGrow && (h > cur.h + 0.005 || y < cur.y - 0.005) ? 14 : 3));
     cur.x += (x - cur.x) * k; cur.y += (y - cur.y) * k; cur.w += (w - cur.w) * k; cur.h += (h - cur.h) * k;
     return cur;
   }
@@ -138,6 +180,7 @@ export function createMirror({ video = null, renderer = null, scene = null, came
       if (!MODES.includes(m)) throw new Error(`mirror.setMode: ${m}`);
       st.mode = m;
       echo.setVisible(m === 'echo');
+      if (m === 'echo') echo.refreshScreenKeepOut();
       if (m === 'calibrate') { st.paletteName = 'calibrate'; st.cropInit = false; }
       if (m === 'replay') st.paletteName = 'results';
       if (m !== 'replay') st.replay = null;
@@ -160,6 +203,8 @@ export function createMirror({ video = null, renderer = null, scene = null, came
      * o.overrides: { h, top, depth, opacity, slots } tweaks. Re-solved from the live camera ~5x/s; always inside the frame.
      */
     setEchoPreset(name, o = {}) { echo.setPreset(name, o); return api.echoPlacement; },
+    /** Screen-space echo keep-outs right now (the HUD rects read from the DOM, canvas fractions). */
+    get echoScreenKeepOut() { return hudKeepOut(); },
     /** Replace the explicit echo keep-out list (null clears; automatic boss / rift / hero keep-outs stay). */
     setEchoKeepOut(list) { echo.setKeepOut(list); },
     /** Last echo placement solve: { mode, preset, slot, scale, rect {x0,y0,x1,y1} (screen fractions), overlap, behind, depth, keepOut[] }. */
@@ -200,7 +245,7 @@ export function createMirror({ video = null, renderer = null, scene = null, came
       const t1 = performance.now();
       const pal = palette();
       const ename = st.paletteOverride ? `${pal.a}${pal.b}` : st.paletteName;
-      const crop = st.echoFraming === 'auto' ? autoCrop(st.echoCrop, frame, 0.95, dt, !st.echoCropInit) : { x: 0, y: 0, w: 1, h: 1 };
+      const crop = st.echoFraming === 'auto' ? autoCrop(st.echoCrop, frame, 0.95, dt, !st.echoCropInit, true) : { x: 0, y: 0, w: 1, h: 1 };
       if (frame) st.echoCropInit = true;
       const ghost = ghostFrame(frame);
       echo.update(frame, { dt, camera, palette: getEchoPal(ename, pal, !st.paletteOverride), pulse: st.pulse, time: st.time, ghost: lowQ() ? null : ghost, ghostAmt: 0.9, crop });
@@ -267,7 +312,7 @@ export function createMirror({ video = null, renderer = null, scene = null, came
     setReplayTime(perfMs) { if (st.replay) { st.replay.t = perfMs; st.replay.ext = true; } },
     get replayProgress() { const R = st.replay; return R ? (R.t - R.from) / Math.max(1, R.to - R.from) : 0; },
 
-    dispose() { seg.dispose(); sty.dispose(); echo.object3d.parent?.remove(echo.object3d); echo.dispose(); if (globalThis.__blcv?.mirror === api) globalThis.__blcv.mirror = null; },
+    dispose() { if (typeof window !== 'undefined') window.removeEventListener('resize', onResize); seg.dispose(); sty.dispose(); echo.object3d.parent?.remove(echo.object3d); echo.dispose(); if (globalThis.__blcv?.mirror === api) globalThis.__blcv.mirror = null; },
   };
   (globalThis.__blcv ||= {}).mirror = api;   // console / automation handle (window.__blcv.mirror)
   return api;

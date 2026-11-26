@@ -11,8 +11,8 @@
 //               the beam converging on the weak point.
 //   'bossKill'  low rear 3/4 two-shot: hero foreground left, Warden + defeat flash centre/right, sky clear at the top
 //               for the banner, slow push. Triggered automatically when a blast takes the boss to hp 0 (bus 'boss').
-//   'replayKill' the results replay of the boss kill (QA r2 P1-8 / art P2-6): first a low side 3/4 from the hero's
-//               left (hero large in profile on the right, arms and the push readable, the Warden on the left), slow push,
+//   'replayKill' the results replay of the boss kill (QA r2 P1-8 / art P2-6, r3 P2-2): first a level rear-side 3/4
+//               from the hero's left composed on thirds (Warden core left third, the whole hero right third), slow push,
 //               then just before the kill a close rear 3/4 two-shot from the hero's left: hero large in the foreground,
 //               the Warden behind taking the beam. opts.killAt = kill time as a fraction of the clip (default 0.52).
 //               While the director is in 'replay' mode a 'bossKill' request is the same shot (VISUAL asks for it).
@@ -143,7 +143,7 @@ export class CameraDirector {
     }
     if (shot === 'blast' && opts.target) this._blastTarget = (this._blastTarget ?? new THREE.Vector3()).copy(opts.target);
     if (shot === 'bossIntro') this._bossFocusOk = false;
-    this.shot = shot; this.shotLeft = dur; this.shotT = 0; this.shotDur = dur; this.shotOpts = opts;
+    this.shot = shot; this.shotLeft = dur; this.shotT = 0; this.shotDur = dur; this.shotOpts = opts; this._rkOpen = null;
     this._phase = null;
     this._snap = true;
     return true;
@@ -236,6 +236,44 @@ export class CameraDirector {
     this.goalLook.copy(p0).addScaledVector(_f, 10);
   }
 
+  /**
+   * replayKill opening: azimuth a (from straight behind the hero toward its left), distance d, fov and look direction
+   * so that the hero's body centre sits at +1/3 of the screen width and the weak point at -1/3, with the whole hero
+   * (feet to raised hands, ~1.15 x its height) inside the letterboxed picture (~76 % of the frame height).
+   */
+  _solveReplayOpen(hips, wp, k) {
+    const aspect = this.camera.aspect || 1.78, vis = 0.76;
+    const camY = 1.12 * k, heroC = new THREE.Vector3(hips.x, 0.88 * k, hips.z), heroSpan = 1.15 * this.heroH;
+    let best = null;
+    for (let deg = 70; deg >= 20; deg -= 5) {
+      const a = THREE.MathUtils.degToRad(deg), ux = Math.sin(a), uz = -Math.cos(a);
+      let d = 3.2 * k, sol = null;
+      for (let it = 0; it < 4; it++) {
+        const C = new THREE.Vector3(heroC.x + ux * d, camY, heroC.z + uz * d);
+        const dh = heroC.clone().sub(C), dw = wp.clone().sub(C);
+        const yh = Math.atan2(dh.x, dh.z), yw = Math.atan2(dw.x, dw.z);
+        let dy = yw - yh; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+        const alpha = Math.abs(dy) / 2;
+        const hHalf = Math.atan(3 * Math.tan(Math.max(alpha, THREE.MathUtils.degToRad(6))));
+        const vHalf = Math.atan(Math.tan(hHalf) / aspect);
+        // hero span must fill <= 62 % of the visible (letterboxed) height
+        const need = heroSpan / (0.62 * vis * 2 * Math.tan(vHalf));
+        const yawF = yh + dy / 2;
+        // tilt up just enough that the hero's centre sits 20 % of the half-height below the middle: feet and raised
+        // hands stay inside the letterbox, the Warden's core rises into the upper-left third
+        const pitch = Math.atan2(heroC.y - camY, Math.hypot(dh.x, dh.z)) + vHalf * 0.2;
+        sol = { a, ux, uz, d, alpha, fov: THREE.MathUtils.radToDeg(2 * vHalf), yawF, pitch };
+        if (Math.abs(need - d) < 0.02) break;
+        d = THREE.MathUtils.clamp(need, 2.2 * k, 9 * k);
+      }
+      const fovOk = sol.fov >= 28 && sol.fov <= 60;
+      if (fovOk) { best = sol; break; }          // the most side-on azimuth whose composition fits
+      if (!best || Math.abs(sol.fov - 44) < Math.abs(best.fov - 44)) best = sol;
+    }
+    const f = new THREE.Vector3(Math.sin(best.yawF) * Math.cos(best.pitch), Math.sin(best.pitch), Math.cos(best.yawF) * Math.cos(best.pitch));
+    return { ux: best.ux, uz: best.uz, d: best.d, y: camY, fov: THREE.MathUtils.clamp(best.fov, 28, 60), fx: f.x, fy: f.y, fz: f.z, deg: THREE.MathUtils.radToDeg(best.a) };
+  }
+
   _heroPoints() {
     const k = this.heroH / 1.6;
     if (this._haveHero) { _b.copy(this._head); _c.copy(this._hips); }
@@ -319,17 +357,15 @@ export class CameraDirector {
         const killAt = Number.isFinite(this.shotOpts?.killAt) ? Math.min(0.9, Math.max(0.2, this.shotOpts.killAt)) : 0.52;
         const split = Math.max(1.2, killAt * Math.max(0.5, dur - 0.5) - 0.7);
         if (t < split) {
-          // low side 3/4 from the hero's left (~110 deg off the facing axis, camera at knee height looking up): the
-          // hero large on the right in profile, the Warden on the left; a slow push in. A front shot cannot hold the
-          // Warden (it stands at +Z, behind a front camera).
+          // opening (QA r3 art P2-2): a level rear-side 3/4 from the hero's left, composed on thirds: the Warden's core
+          // on the left third, the hero's whole body (head clear of the raised arms) on the right third, slow push in.
+          // The camera azimuth / distance are solved once at the shot start (no swimming), from the real anchors.
           const u = smooth(t / split);
           const [wp] = this._bossAnchors();
-          this.goalPos.set(hh.x + (2.3 - 0.15 * u) * k, (0.5 + 0.05 * u) * k, hh.z + (-0.9 + 0.15 * u) * k);
-          const chest = _d.lerpVectors(hh, hp, 0.6);
-          _q.copy(chest).sub(this.goalPos).normalize().multiplyScalar(0.62);
-          _f.copy(wp).sub(this.goalPos).normalize().multiplyScalar(0.38);
-          this.goalLook.copy(this.goalPos).addScaledVector(_q.add(_f).normalize(), 10);
-          this.goalFov = 58 - 3 * u;
+          const R = this._rkOpen ??= this._solveReplayOpen(hh, wp, k);
+          this.goalPos.set(hh.x + R.ux * R.d * (1 - 0.07 * u), R.y, hh.z + R.uz * R.d * (1 - 0.07 * u));
+          this.goalLook.copy(this.goalPos).addScaledVector(_q.set(R.fx, R.fy, R.fz), 10);
+          this.goalFov = R.fov * (1 - 0.04 * u);
           this._setPhase('side');
           return;
         }

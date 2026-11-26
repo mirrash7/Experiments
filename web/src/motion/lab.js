@@ -1,7 +1,8 @@
 // Motion Lab: a standalone test bed for the motion pipeline (web/motion-lab.html). Loads a VRM directly,
 // implements the hero contract (applyHumanoidPose + info) on it, runs the pipeline from any source, and shows
 // raw keypoints next to the avatar plus live latency / jitter / foot-skate / FK-error metrics.
-// URL params: ?vrm=/vrm/x.vrm  &source=synthetic|still|clip|hmr|mediapipe  &fakecam=1 (GIF as the camera)
+// URL params: ?vrm=/vrm/x.vrm  &source=synthetic|still|clip|hmr|mediapipe|session  &fakecam=1 (GIF as the camera)
+//   &session=/recordings/breaklight-session-....json.gz (&from=&to= seconds): replay a BREAKLIGHT playtest recording
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -111,6 +112,10 @@ async function makeSource(name) {
   if (name === 'synthetic') return new SyntheticSource();
   if (name === 'still') return new SyntheticSource({ still: true, noise: 0.01 });
   if (name === 'clip') { clip ??= await RecordedSource.load('/motion/clips/demo-hmr.json'); return clip; }
+  if (name === 'session') {   // a BREAKLIGHT playtest recording: &session=/recordings/x.json.gz (&from=s &to=s)
+    const { SessionSource } = await import('../game/record/sessionSource.js');
+    return SessionSource.load(Q.get('session'), { loop: true, from: +(Q.get('from') ?? 0), to: Q.get('to') != null ? +Q.get('to') : Infinity });
+  }
   if (name === 'hmr' || name === 'mediapipe') {
     if (!camera.active) await camera.start();
     if (name === 'hmr') return new HMRSource(camera);

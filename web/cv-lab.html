@@ -39,6 +39,25 @@
     #replay .label, #replayHero { position: absolute; font: 400 28px Bangers, Impact, sans-serif; letter-spacing: .06em; color: #fff; text-shadow: 0 0 14px #ff52d9; }
     #replay .label { left: 14px; top: 8px; }
     #replayHero { right: 6vw; top: calc(50% - 22vw * 9 / 16 - 10px); display: none; z-index: 10; text-shadow: 0 0 14px #7ef9ff; }
+    /* mock game HUD (?hud=1 / "Mock HUD"): same classes + geometry as game.css, so the echo's DOM keep-outs can be tested */
+    #mockHud { --u: min(1vw, 1.6vh); position: fixed; inset: 0; pointer-events: none; z-index: 12; font-weight: 800; }
+    #mockHud.bl-hidden { display: none; }
+    #mockHud .bl-vitals { position: absolute; left: calc(var(--u) * 2); top: calc(var(--u) * 1.6); display: flex; flex-direction: column; gap: calc(var(--u) * 0.7); }
+    #mockHud .bl-hearts { display: flex; gap: calc(var(--u) * 0.35); }
+    #mockHud .bl-hearts i { width: calc(var(--u) * 2.3); height: calc(var(--u) * 2.15); background: #ff3b7a; border-radius: 40% 40% 50% 50%; }
+    #mockHud .bl-flow { display: flex; align-items: center; gap: calc(var(--u) * 0.7); }
+    #mockHud .bl-flow-bar { width: calc(var(--u) * 17); height: calc(var(--u) * 1.1); background: linear-gradient(90deg, #ff9d2e, #ffd34f); transform: skewX(-20deg); }
+    #mockHud .bl-flow-label { font: 400 calc(var(--u) * 1.15) Bangers, Impact, sans-serif; letter-spacing: .08em; color: #ffd34f; white-space: nowrap; }
+    #mockHud .bl-mode-tag { font-size: calc(var(--u) * 0.75); letter-spacing: .3em; color: #6fffc0; }
+    #mockHud .bl-score { position: absolute; right: calc(var(--u) * 2); top: calc(var(--u) * 1.4); text-align: right; }
+    #mockHud .bl-score span { display: block; font-size: calc(var(--u) * 0.8); letter-spacing: .34em; color: #bbb; }
+    #mockHud .bl-score b { font: 400 calc(var(--u) * 3) Bangers, Impact, sans-serif; line-height: 1; color: #fff; }
+    #mockHud .bl-combo { position: absolute; left: calc(var(--u) * 2.2); top: 42%; transform: translateY(-50%) skewX(-8deg); display: flex; flex-direction: column; }
+    #mockHud .bl-combo b { font: 400 calc(var(--u) * 5.2) Bangers, Impact, sans-serif; line-height: .95; color: #fff; }
+    #mockHud .bl-combo span { font-size: calc(var(--u) * 1); letter-spacing: .4em; color: #7ef9ff; }
+    #mockHud .bl-combo em { margin-top: calc(var(--u) * .4); font: normal 400 calc(var(--u) * 1.6) Bangers, Impact, sans-serif; background: #6fffc0; color: #111; padding: 0 .5em; align-self: flex-start; }
+    #mockHud .bl-lane-top { position: absolute; left: 0; right: 0; top: calc(var(--u) * 1.4); height: 0; }
+    #mockHud .bl-pip { position: absolute; right: calc(var(--u) * 1.6); bottom: calc(var(--u) * 1.6); width: calc(var(--u) * 17); aspect-ratio: 16 / 9; border-radius: calc(var(--u) * .5); background: rgba(10, 8, 30, .8); border: 1px solid rgba(126, 249, 255, .4); }
   </style>
 </head>
 <body>
@@ -47,6 +66,13 @@
   <div id="calib"><div class="label">STRIKE THE T-POSE</div></div>
   <div id="replay"><div class="label">YOU · 0.35×</div></div>
   <div id="replayHero">HERO · 0.35×</div>
+  <div id="mockHud" class="bl-hud bl-hidden">
+    <div class="bl-vitals"><div class="bl-hearts"><i></i><i></i><i></i><i></i><i></i></div><div class="bl-flow"><div class="bl-flow-bar"></div><span class="bl-flow-label">OVERDRIVE ×2</span></div><div class="bl-mode-tag">SHOWCASE · NO-FAIL</div></div>
+    <div class="bl-score"><span>SCORE</span><b>22,155</b></div>
+    <div class="bl-combo"><b>10</b><span>COMBO</span><em>×2</em></div>
+    <div class="bl-lane bl-lane-top"></div>
+    <div class="bl-pip"></div>
+  </div>
   <video id="srcVideo" muted playsinline autoplay></video>
   <div id="panel">
     <h1>BREAKLIGHT · CV LAB</h1>
@@ -61,7 +87,7 @@
     <h2>Photo booth</h2>
     <div class="row"><button id="arm">Arm (detect pose)</button><button id="fake">Fake victory</button><button id="save">Save PNG</button></div>
     <h2>Quality</h2>
-    <div class="row"><select id="quality"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select><button id="hide">Hide UI (U)</button></div>
+    <div class="row"><select id="quality"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select><button id="hide">Hide UI (U)</button><button id="hudBtn">Mock HUD</button></div>
     <p class="note">All processing is local to this tab (MediaPipe in a worker). Nothing is uploaded.</p>
   </div>
   <div id="stats"></div>

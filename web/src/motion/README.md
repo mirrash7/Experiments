@@ -375,3 +375,20 @@ contacts, foot lock, hinge limits · `layers.js` procedural base, confidence, ac
 classification + authored poses · `metrics.js` · `math.js` · `lab.js` motion lab page.
 Sources: `../sources/recordedSource.js` (replay + `Recorder`); clip `public/motion/clips/demo-hmr.json`
 recorded with `server/tools/record_clip.py`.
+
+### Playtest replay bench (BREAKLIGHT design QA r3: P1-2)
+
+- **Recording** (`web/src/game/record/recorder.js`, `?record=1`): raw tracker frames as they reach the detector
+  (quantised: joints mm, conf, kp2d, MHR params, camT), detector events + near-miss / suppressed counters,
+  recalibrations and flags, and the game's spawns / judgements (target time on the capture timebase) / Awakening
+  waits / pauses / fps. Format: `web/src/game/record/format.js`; guide: `docs/game/PLAYTEST.md`.
+- **`replayBench.js`** (`node web/src/motion/replayBench.js session.json.gz [--detector=path] [--pipeline] [--notes]
+  [--json=out]`): re-runs the detector on the recorded frames on a simulated clock (each frame at its recorded push
+  time, recalibrations at the same frame index), checks parity against the recorded live events, then runs the real
+  `core/judge.js` offline twice (live events: must reproduce the live judge log; replayed events: the candidate
+  detector's score). Reports per move hits, gained / lost notes, misses split not detected / not attempted /
+  untracked / wrong side (kinematic heuristic), timing error shift, stray phantoms per minute of play, the Awakening
+  waits, fps and latency. `--pipeline` also runs the whole `MotionPipeline` headless (canonical rig, rig JSON from
+  `web/public/motion/mhr-rig.json`, `performance.now` simulated) and prints its metrics snapshot.
+- **Watching a session**: `SessionSource` (`web/src/game/record/sessionSource.js`) is a live source that plays a
+  recording on the live clock; `motion-lab.html?source=session&session=<url>&from=&to=`.

@@ -118,12 +118,12 @@ export const AWAKEN_PROMPT = {
   striker: { left: '◀ LEFT PUNCH', right: 'RIGHT PUNCH ▶' },
   crawler: { left: '◀ LEFT KICK', right: 'RIGHT KICK ▶' },
   sweep: 'JUMP!', scythe: 'DUCK!', volley: { left: 'LEAN RIGHT ▶', right: '◀ LEAN LEFT' },
-  brute: 'GUARD! fists up by your face', core: 'HANDS UP to charge… then PUSH!',
+  brute: 'GUARD!', core: 'HANDS UP!',
 };
 export const AWAKEN_HINT = {
   punch: 'Punch the orange spirits: left lane = left hand', guard: 'Block the gold brute, then punch it 3 times',
   dodge: 'Lean away from the yellow orbs', duck: 'Duck under the violet beam', jump: 'Jump the red floor beam',
-  kick: 'Kick the cyan crawlers', blast: 'Your Breaklight: both hands up, then push!',
+  kick: 'Kick the cyan crawlers', blast: 'Charge your Breaklight',
 };
 
 /** Build the Awakening notes from beat `startBeat` (virtual timeline). Returns { notes, endBeat }. */

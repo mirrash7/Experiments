@@ -235,13 +235,22 @@ export function tutorialScreen(ctx, { steps, onDone, onSkip } = {}) {
     if (R.reps >= REPS) clear();
     return true;
   }
+  // QA r3 art P2-5: the last rep's grade (SHARP! + its sub-line) gets 450 ms on its own, then it is cleared and DRILL
+  // CLEAR stamps alone (they used to print over each other above the hero's head)
+  const CLEAR_DELAY_MS = 450;
   function clear() {
     R.clearing = true;
     stepEls[R.i].classList.add('is-done');
-    const stamp = h('div', { class: 'bl-tut-clear' }, 'DRILL CLEAR');
-    node.append(stamp);
-    stamp.animate([{ opacity: 0, transform: 'translate(-50%,-50%) scale(2.4) rotate(-10deg)' }, { opacity: 1, transform: 'translate(-50%,-50%) scale(1) rotate(-6deg)', offset: 0.2 }, { opacity: 1, offset: 0.8 }, { opacity: 0 }], { duration: 1300, easing: 'ease-out', fill: 'forwards' }).onfinish = () => stamp.remove();
-    setTimeout(() => next(false), 1300);
+    const i0 = R.i;
+    setTimeout(() => {
+      if (R.done || R.i !== i0) return;
+      fbEl.getAnimations().forEach((a) => a.cancel());       // the grade is gone before the stamp lands (no cross-fade)
+      fbEl.className = 'bl-tut-fb';
+      const stamp = h('div', { class: 'bl-tut-clear' }, 'DRILL CLEAR');
+      node.append(stamp);
+      stamp.animate([{ opacity: 0, transform: 'translate(-50%,-50%) scale(2.4) rotate(-10deg)' }, { opacity: 1, transform: 'translate(-50%,-50%) scale(1) rotate(-6deg)', offset: 0.2 }, { opacity: 1, offset: 0.8 }, { opacity: 0 }], { duration: 1300, easing: 'ease-out', fill: 'forwards' }).onfinish = () => stamp.remove();
+    }, CLEAR_DELAY_MS);
+    setTimeout(() => { if (!R.done && R.i === i0) next(false); }, CLEAR_DELAY_MS + 1300);
   }
   function showSide() {
     if (R.id !== 'dodge') { sideEl.className = 'bl-tut-side-cue'; sideEl.textContent = ''; return; }

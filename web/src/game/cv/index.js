@@ -18,6 +18,14 @@
 //   booth.busy (armed / counting / capturing / preview open), booth.setBlocked(on) (hide + pause the booth, e.g. while
 //       a replay plays; resumes where it was), booth.blocked, booth.setReduceFlash(on).
 //   window.__blcv = { mirror, booth } (console / automation handle).
+//
+// Fix round 3 (QA art r3 P1-2, P2-4), no API changes needed by the game:
+//   The echo is placed and sized by its FIGURE (feet line + standing height; raised arms make it taller) and keeps out
+//   of the HUD: mirror reads '.bl-hud' parts (vitals, score, combo, PiP, skip, top banner lane) from the DOM every
+//   ~0.4 s / on resize / on echo on, avoids them when solving, and clamps the figure every frame inside the safe frame
+//   and below any HUD rect in its column. mirror.echoScreenKeepOut (the rects), mirror.echoPlacement.figure (this
+//   frame's figure box), mirror.echo.setScreenKeepOut(fn) / refreshScreenKeepOut() (custom provider / force re-read).
+//   The pour's arrival glow is a soft additive rim + bloom around the hero's silhouette that fades out (no fill).
 export { createMirror, heroScreenRect } from './mirror.js';
 export { createPhotoBooth, renderHero } from './photobooth.js';
 export { createSegmenter, SEG_QUALITY } from './segmenter.js';
