@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BREAKLIGHT Visual Lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%23ffb040%22/%3E%3C/svg%3E" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0816; overflow: hidden; font: 12px/1.3 system-ui, -apple-system, sans-serif; color: #f4ecff; }
+    #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    #panel { position: fixed; top: 10px; left: 10px; width: 250px; max-height: calc(100% - 20px); overflow: auto; background: rgba(16, 10, 34, 0.72);
+      border: 1px solid rgba(255, 200, 255, 0.18); border-radius: 10px; padding: 8px 10px; backdrop-filter: blur(6px); }
+    #panel.hidden { display: none; }
+    h1 { font-size: 13px; letter-spacing: 0.18em; margin: 2px 0 6px; color: #ffd27a; }
+    h2 { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; margin: 10px 0 4px; color: #c8a8ff; }
+    .row { display: flex; flex-wrap: wrap; gap: 4px; }
+    button, select { background: rgba(255, 255, 255, 0.08); color: #fff; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 6px; padding: 4px 7px; font: inherit; cursor: pointer; }
+    button:hover { background: rgba(255, 200, 120, 0.25); }
+    button.on { background: rgba(255, 190, 90, 0.45); }
+    #stats { position: fixed; right: 10px; top: 10px; background: rgba(16, 10, 34, 0.6); border-radius: 8px; padding: 6px 9px; font: 11px/1.35 ui-monospace, monospace; white-space: pre; }
+    #loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 14px; letter-spacing: 0.2em; color: #ffd27a; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="loading">LOADING…</div>
+  <div id="panel">
+    <h1>BREAKLIGHT · VISUAL LAB</h1>
+    <h2>Act</h2>
+    <div class="row" id="acts"></div>
+    <h2>Spirit outcome</h2>
+    <div class="row" id="outcomes"></div>
+    <h2>Spawn</h2>
+    <div class="row" id="spawns"></div>
+    <div class="row" style="margin-top:4px"><button id="wave">Wave ×8</button><button id="clear">Clear</button></div>
+    <h2>Boss</h2>
+    <div class="row" id="bossBtns"></div>
+    <h2>VFX</h2>
+    <div class="row" id="vfxBtns"></div>
+    <h2>Camera / quality</h2>
+    <div class="row" id="camBtns"></div>
+    <div class="row" style="margin-top:4px">
+      <select id="quality"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+      <button id="beat" class="on">Beat 128</button><button id="hero" class="on">Hero</button><button id="hide">Hide UI (U)</button>
+    </div>
+  </div>
+  <div id="stats"></div>
+  <script type="module" src="/src/game/visual/lab.js"></script>
+</body>
+</html>

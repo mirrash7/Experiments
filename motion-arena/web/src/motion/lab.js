@@ -1,7 +1,8 @@
 // Motion Lab: a standalone test bed for the motion pipeline (web/motion-lab.html). Loads a VRM directly,
 // implements the hero contract (applyHumanoidPose + info) on it, runs the pipeline from any source, and shows
 // raw keypoints next to the avatar plus live latency / jitter / foot-skate / FK-error metrics.
-// URL params: ?vrm=/vrm/x.vrm  &source=synthetic|still|clip|hmr|mediapipe  &fakecam=1 (GIF as the camera)
+// URL params: ?vrm=/vrm/x.vrm  &source=synthetic|still|clip|hmr|mediapipe|session  &fakecam=1 (GIF as the camera)
+//   &session=/recordings/breaklight-session-....json.gz (&from=&to= seconds): replay a BREAKLIGHT playtest recording
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -13,7 +14,8 @@ import { RecordedSource, Recorder } from '../sources/recordedSource.js';
 import { HMRSource } from '../sources/hmrSource.js';
 import { Camera } from '../sources/camera.js';
 import { createFx } from '../fx/index.js';
-import { runTriggerTest, formatTriggerTest } from './triggerTest.js';
+import { runTriggerTest, formatTriggerTest, runRobustness, runSequences, runKneeBench } from './triggerTest.js';
+import { formatBench } from './moveBench.js';
 
 const $ = (id) => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
@@ -110,6 +112,10 @@ async function makeSource(name) {
   if (name === 'synthetic') return new SyntheticSource();
   if (name === 'still') return new SyntheticSource({ still: true, noise: 0.01 });
   if (name === 'clip') { clip ??= await RecordedSource.load('/motion/clips/demo-hmr.json'); return clip; }
+  if (name === 'session') {   // a BREAKLIGHT playtest recording: &session=/recordings/x.json.gz (&from=s &to=s)
+    const { SessionSource } = await import('../game/record/sessionSource.js');
+    return SessionSource.load(Q.get('session'), { loop: true, from: +(Q.get('from') ?? 0), to: Q.get('to') != null ? +Q.get('to') : Infinity });
+  }
   if (name === 'hmr' || name === 'mediapipe') {
     if (!camera.active) await camera.start();
     if (name === 'hmr') return new HMRSource(camera);
@@ -270,7 +276,10 @@ function step(dt) {
 
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
 
-const lab = { events: [], THREE, step, setSource, cam, controls, triggerTest: (o) => { const r = runTriggerTest(o); r.text = formatTriggerTest(r); return r; }, get vrm() { return vrm; }, get source() { return source; } };
+const lab = { events: [], THREE, step, setSource, cam, controls, triggerTest: (o) => { const r = runTriggerTest(o); r.text = formatTriggerTest(r); return r; },
+  moveBench: (o = { seeds: [1] }) => { const r = runRobustness(o); r.text = Object.entries(r.configs).map(([n, c]) => formatBench(c, n)).join('\n\n'); return r; },
+  sequenceBench: (o = { seeds: [1] }) => { const r = runSequences(o); r.text = Object.entries(r.configs).map(([n, c]) => formatBench(c, n)).join('\n\n'); return r; },
+  kneeBench: (o = { seeds: [1] }) => { const r = runKneeBench(o); r.text = Object.entries(r.configs).map(([n, c]) => formatBench(c, n)).join('\n\n'); return r; }, get vrm() { return vrm; }, get source() { return source; } };
 /** Automation: run a source for `ms` with a fixed 60 Hz update loop (works with the tab hidden), return metrics. */
 lab.measure = async (name, ms = 8000, opts = {}, warm = 2500) => {
   lab.manual = true;

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>BREAKLIGHT Audio Lab</title>
+  <style>
+    :root { --bg: #0f1218; --panel: #181d26; --fg: #e6edf3; --dim: #8b98a5; --acc: #ffb547; --ok: #4ade80; --bad: #f87171; --line: #2b3342; }
+    html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
+    main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: 1fr 360px; gap: 14px; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+    h1 { grid-column: 1 / -1; margin: 0; font-size: 18px; letter-spacing: .12em; }
+    h1 small { color: var(--dim); font-weight: 400; letter-spacing: 0; margin-left: 8px; }
+    h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--acc); }
+    button { background: #252d3a; color: var(--fg); border: 1px solid #3a4558; border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
+    button:hover { border-color: var(--acc); }
+    button.on { background: var(--acc); color: #111; border-color: var(--acc); }
+    .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+    label { color: var(--dim); display: flex; gap: 6px; align-items: center; }
+    input[type=range] { width: 140px; }
+    #beat { display: flex; gap: 8px; align-items: center; }
+    .dot { width: 34px; height: 34px; border-radius: 50%; background: #2a3240; transition: background .08s, transform .08s; }
+    .dot.flash { background: var(--acc); transform: scale(1.12); transition: none; }
+    .dot.down.flash { background: var(--ok); }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    td { padding: 2px 0; border-bottom: 1px solid #222a36; }
+    td:first-child { color: var(--dim); }
+    td:last-child { text-align: right; }
+    canvas { width: 100%; height: 90px; background: #10141b; border-radius: 6px; display: block; }
+    #sfx button { min-width: 92px; }
+    .note { color: var(--dim); font-size: 12px; }
+    .bad { color: var(--bad); } .good { color: var(--ok); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>BREAKLIGHT AUDIO LAB <small>procedural Web Audio · 128 BPM</small></h1>
+    <div>
+      <section>
+        <h3>Transport</h3>
+        <div class="row">
+          <button id="unlock">Unlock audio</button>
+          <span id="beat"><span class="dot down"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+          <span id="pos" class="note"></span>
+        </div>
+        <div class="row" id="songs"></div>
+        <div class="row" id="intens"><label>Intensity</label></div>
+        <div class="row">
+          <input type="range" id="inten" min="0" max="1" step="0.01" value="0.5" /> <span id="intenV">0.50</span>
+          <button id="od">Overdrive</button>
+        </div>
+        <div class="row">
+          <label>Master <input type="range" id="vMaster" min="0" max="1" step="0.01" value="0.9" /></label>
+          <label>Music <input type="range" id="vMusic" min="0" max="1" step="0.01" value="0.8" /></label>
+          <label>SFX <input type="range" id="vSfx" min="0" max="1" step="0.01" value="1" /></label>
+        </div>
+      </section>
+      <section style="margin-top:14px">
+        <h3>SFX</h3>
+        <div class="row">
+          <label>Pan <input type="range" id="pan" min="-1" max="1" step="0.1" value="0" /></label>
+          <label>Pitch <input type="range" id="pitch" min="0.5" max="2" step="0.05" value="1" /></label>
+          <label><input type="checkbox" id="quant" /> quantize to next beat</label>
+        </div>
+        <div class="row" id="sfx"></div>
+      </section>
+      <section style="margin-top:14px">
+        <h3>Drift / timing (scheduled vs actual)</h3>
+        <canvas id="plot" width="760" height="90"></canvas>
+        <p class="note">Orange: onBeat callback lateness (ms, actual perf time − clock.toPerf(beat)). Green: clock mapping drift since anchor (ms). Blue: marker onset error from an AudioWorklet (rendered ctx time − scheduled ctx time).</p>
+      </section>
+      <section style="margin-top:14px">
+        <h3>Offline render check</h3>
+        <div class="row"><button id="offline">Render 8 s of each song (+SFX) offline</button></div>
+        <pre id="offOut" class="note" style="white-space:pre-wrap"></pre>
+      </section>
+    </div>
+    <section>
+      <h3>Engine</h3>
+      <table id="stats"></table>
+      <h3 style="margin-top:12px">Output meter</h3>
+      <canvas id="meter" width="320" height="40" style="height:40px"></canvas>
+    </section>
+  </main>
+  <script type="module" src="/src/game/audio/lab.js"></script>
+</body>
+</html>

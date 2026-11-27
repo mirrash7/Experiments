@@ -1,8 +1,44 @@
 # Motion Arena — webcam body tracking → 3D game character
 
-A playable test bed for a Kinect-style game: your webcam tracks your body, a toon-shaded 3D hero copies your
-movements in real time, and a HUD shows how responsive and accurate the tracking is. There is no game logic yet,
-but the gesture triggers a game would listen to (jump, punches, kicks, squat, lean, hands up, and more) are wired up.
+## BREAKLIGHT (the game)
+
+A webcam-only, full-body rhythm-combat game. An anime hero mirrors you on a floating sky-island while crystal
+spirits surge in on the beat of a procedural soundtrack. You punch, kick, jump, duck, dodge, guard, and charge a
+two-hand Breaklight blast. There are three acts and a boss, the Eclipse Warden.
+
+The computer-vision showcase includes:
+- **Hand-cursor menus.**
+- **T-pose calibration** with a live neon silhouette of you that pours into the hero.
+- **A sky echo** of you during Overdrive.
+- **Body stats measured by AI:** wrist speed, jump height, reaction time.
+- **A slow-motion replay** rebuilt from your captured motion.
+- **A victory-pose Photo Booth.** Photos stay local.
+
+Open **http://127.0.0.1:5173/game.html** in Chrome (with the dev server and, optionally, the InstantHMR server running; see below).
+
+Useful flags:
+
+| Flag | What it does |
+|---|---|
+| `?autoplay=1` | The bot plays the whole game, no camera needed |
+| `?tracker=hmr\|mediapipe\|demo` | Picks the tracker |
+| `?kiosk=1` | Shared-machine mode with a ~4 min demo and a NEW PLAYER reset |
+| `?mode=challenge` | Strict hearts |
+| `?seated=1` | Seated mode |
+| `?upper=1` | Upper body only |
+| `?knee=1` | Knee strikes instead of front kicks |
+| `?reduceFlashes=1` | Dims flashes and shake |
+| `?record=1` | Saves playtest sessions locally |
+| `?debug=1` | Debug overlay |
+
+Playtests: see [docs/game/PLAYTEST.md](docs/game/PLAYTEST.md). The design and QA history is in [docs/game/](docs/game/).
+
+---
+
+## Motion Arena (dev test bed)
+
+`index.html` is a test bed for the character and tracking: your webcam tracks your body, the hero copies your
+movements in real time, and a HUD shows how responsive and accurate the tracking is.
 
 ## Run it
 
@@ -93,7 +129,7 @@ Trigger names describe the player's own body: `punchLeft` means your left hand, 
 ## Setup after cloning
 
 ```bash
-cd web && npm install && mkdir -p public/models public/mediapipe && cp -R node_modules/@mediapipe/tasks-vision/wasm public/mediapipe/ && curl -sSL -o public/models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task
+cd web && npm install && mkdir -p public/models public/mediapipe && cp -R node_modules/@mediapipe/tasks-vision/wasm public/mediapipe/ && curl -sSL -o public/models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task && curl -sSL -o public/models/pose_landmarker_lite.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
 ```
 
 The InstantHMR server venv is created with `uv` (Python 3.11) from `server/requirements.txt`. Model weights download from Hugging Face on first run.

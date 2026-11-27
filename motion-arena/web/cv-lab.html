@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BREAKLIGHT CV Lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%233ff0ff%22/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0816; overflow: hidden; font: 12px/1.3 Inter, system-ui, sans-serif; color: #f4ecff; }
+    #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    #panel { position: fixed; top: 10px; left: 10px; width: 262px; max-height: calc(100% - 20px); overflow: auto; background: rgba(16, 10, 34, 0.78);
+      border: 1px solid rgba(160, 240, 255, 0.2); border-radius: 10px; padding: 8px 10px; backdrop-filter: blur(6px); z-index: 20; }
+    #panel.hidden { display: none; }
+    h1 { font-size: 13px; letter-spacing: 0.18em; margin: 2px 0 6px; color: #7ef9ff; }
+    h2 { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; margin: 10px 0 4px; color: #c8a8ff; }
+    .row { display: flex; flex-wrap: wrap; gap: 4px; }
+    button, select { background: rgba(255, 255, 255, 0.08); color: #fff; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 6px; padding: 4px 7px; font: inherit; cursor: pointer; }
+    button:hover { background: rgba(120, 240, 255, 0.22); }
+    button.on { background: rgba(80, 220, 255, 0.42); }
+    .note { font-size: 11px; color: rgba(255,255,255,.7); margin: 6px 0 0; }
+    #stats { position: fixed; right: 10px; top: 10px; background: rgba(16, 10, 34, 0.66); border-radius: 8px; padding: 6px 9px; font: 11px/1.35 ui-monospace, monospace; white-space: pre; z-index: 20; }
+    #loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 14px; letter-spacing: 0.2em; color: #7ef9ff; pointer-events: none; }
+    #srcVideo { position: fixed; right: 10px; bottom: 10px; width: 240px; border-radius: 8px; border: 1px solid rgba(255,255,255,.2); z-index: 20; transform: scaleX(-1); }
+    /* calibration guide frame (what UI would own in the game) */
+    /* borderless: the hologram floats over the scene (no panel / debug-window chrome) */
+    #calib { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(62vw, 960px); aspect-ratio: 16 / 9; z-index: 10; display: none; }
+    #calib.show { display: block; }
+    #calib .label { transition: opacity .2s; }
+    #calib.pouring .label { opacity: 0; }
+    #calib canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #calib .label { position: absolute; left: 50%; bottom: -44px; transform: translateX(-50%); font: 400 30px Bangers, Impact, sans-serif; letter-spacing: .06em; color: #fff; text-shadow: 0 0 16px #7a5cff; white-space: nowrap; }
+    /* results side-by-side */
+    #replay { position: fixed; left: 4vw; top: 50%; transform: translateY(-50%); width: 40vw; aspect-ratio: 16 / 9; z-index: 10; display: none; border-radius: 16px;
+      background: linear-gradient(rgba(8, 4, 20, 0.28), rgba(8, 4, 20, 0.12)); box-shadow: inset 0 0 0 1px rgba(255, 82, 217, .45); }
+    #replay.show { display: block; }
+    #replay canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #replay .label, #replayHero { position: absolute; font: 400 28px Bangers, Impact, sans-serif; letter-spacing: .06em; color: #fff; text-shadow: 0 0 14px #ff52d9; }
+    #replay .label { left: 14px; top: 8px; }
+    #replayHero { right: 6vw; top: calc(50% - 22vw * 9 / 16 - 10px); display: none; z-index: 10; text-shadow: 0 0 14px #7ef9ff; }
+    /* mock game HUD (?hud=1 / "Mock HUD"): same classes + geometry as game.css, so the echo's DOM keep-outs can be tested */
+    #mockHud { --u: min(1vw, 1.6vh); position: fixed; inset: 0; pointer-events: none; z-index: 12; font-weight: 800; }
+    #mockHud.bl-hidden { display: none; }
+    #mockHud .bl-vitals { position: absolute; left: calc(var(--u) * 2); top: calc(var(--u) * 1.6); display: flex; flex-direction: column; gap: calc(var(--u) * 0.7); }
+    #mockHud .bl-hearts { display: flex; gap: calc(var(--u) * 0.35); }
+    #mockHud .bl-hearts i { width: calc(var(--u) * 2.3); height: calc(var(--u) * 2.15); background: #ff3b7a; border-radius: 40% 40% 50% 50%; }
+    #mockHud .bl-flow { display: flex; align-items: center; gap: calc(var(--u) * 0.7); }
+    #mockHud .bl-flow-bar { width: calc(var(--u) * 17); height: calc(var(--u) * 1.1); background: linear-gradient(90deg, #ff9d2e, #ffd34f); transform: skewX(-20deg); }
+    #mockHud .bl-flow-label { font: 400 calc(var(--u) * 1.15) Bangers, Impact, sans-serif; letter-spacing: .08em; color: #ffd34f; white-space: nowrap; }
+    #mockHud .bl-mode-tag { font-size: calc(var(--u) * 0.75); letter-spacing: .3em; color: #6fffc0; }
+    #mockHud .bl-score { position: absolute; right: calc(var(--u) * 2); top: calc(var(--u) * 1.4); text-align: right; }
+    #mockHud .bl-score span { display: block; font-size: calc(var(--u) * 0.8); letter-spacing: .34em; color: #bbb; }
+    #mockHud .bl-score b { font: 400 calc(var(--u) * 3) Bangers, Impact, sans-serif; line-height: 1; color: #fff; }
+    #mockHud .bl-combo { position: absolute; left: calc(var(--u) * 2.2); top: 42%; transform: translateY(-50%) skewX(-8deg); display: flex; flex-direction: column; }
+    #mockHud .bl-combo b { font: 400 calc(var(--u) * 5.2) Bangers, Impact, sans-serif; line-height: .95; color: #fff; }
+    #mockHud .bl-combo span { font-size: calc(var(--u) * 1); letter-spacing: .4em; color: #7ef9ff; }
+    #mockHud .bl-combo em { margin-top: calc(var(--u) * .4); font: normal 400 calc(var(--u) * 1.6) Bangers, Impact, sans-serif; background: #6fffc0; color: #111; padding: 0 .5em; align-self: flex-start; }
+    #mockHud .bl-lane-top { position: absolute; left: 0; right: 0; top: calc(var(--u) * 1.4); height: 0; }
+    #mockHud .bl-pip { position: absolute; right: calc(var(--u) * 1.6); bottom: calc(var(--u) * 1.6); width: calc(var(--u) * 17); aspect-ratio: 16 / 9; border-radius: calc(var(--u) * .5); background: rgba(10, 8, 30, .8); border: 1px solid rgba(126, 249, 255, .4); }
+  </style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="loading">LOADING…</div>
+  <div id="calib"><div class="label">STRIKE THE T-POSE</div></div>
+  <div id="replay"><div class="label">YOU · 0.35×</div></div>
+  <div id="replayHero">HERO · 0.35×</div>
+  <div id="mockHud" class="bl-hud bl-hidden">
+    <div class="bl-vitals"><div class="bl-hearts"><i></i><i></i><i></i><i></i><i></i></div><div class="bl-flow"><div class="bl-flow-bar"></div><span class="bl-flow-label">OVERDRIVE ×2</span></div><div class="bl-mode-tag">SHOWCASE · NO-FAIL</div></div>
+    <div class="bl-score"><span>SCORE</span><b>22,155</b></div>
+    <div class="bl-combo"><b>10</b><span>COMBO</span><em>×2</em></div>
+    <div class="bl-lane bl-lane-top"></div>
+    <div class="bl-pip"></div>
+  </div>
+  <video id="srcVideo" muted playsinline autoplay></video>
+  <div id="panel">
+    <h1>BREAKLIGHT · CV LAB</h1>
+    <h2>Camera source</h2>
+    <div class="row" id="srcBtns"></div>
+    <h2>Mirror mode</h2>
+    <div class="row" id="modeBtns"></div>
+    <div class="row" style="margin-top:4px"><button id="pour">Pour into hero</button><button id="od">Overdrive</button><button id="framing">Framing: full</button></div>
+    <div class="row" style="margin-top:4px" id="presetBtns"></div>
+    <h2>Results replay</h2>
+    <div class="row"><button id="rec" class="on">Recording</button><button id="play">Side-by-side replay</button></div>
+    <h2>Photo booth</h2>
+    <div class="row"><button id="arm">Arm (detect pose)</button><button id="fake">Fake victory</button><button id="save">Save PNG</button></div>
+    <h2>Quality</h2>
+    <div class="row"><select id="quality"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select><button id="hide">Hide UI (U)</button><button id="hudBtn">Mock HUD</button></div>
+    <p class="note">All processing is local to this tab (MediaPipe in a worker). Nothing is uploaded.</p>
+  </div>
+  <div id="stats"></div>
+  <script type="module" src="/src/game/cv/lab.js"></script>
+</body>
+</html>
